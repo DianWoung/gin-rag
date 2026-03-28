@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -70,6 +71,10 @@ func Load() (*Config, error) {
 			ChunkSize:    readInt("CHUNK_SIZE", 800),
 			ChunkOverlap: readInt("CHUNK_OVERLAP", 120),
 		},
+	}
+
+	if cfg.Embedding.BaseURL == "" {
+		log.Println("WARNING: EMBEDDING_BASE_URL is empty, embedding requests will fall back to the OpenAI default endpoint")
 	}
 
 	return cfg, nil

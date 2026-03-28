@@ -34,6 +34,12 @@ func main() {
 	}
 
 	provider := llm.NewProvider(cfg.Chat, cfg.Embedding)
+
+	if err := provider.PingEmbedding(ctx); err != nil {
+		log.Fatalf("ping embedding service: %v", err)
+	}
+	log.Println("embedding service is reachable")
+
 	splitter := ingest.NewSplitter(cfg.Chunking.ChunkSize, cfg.Chunking.ChunkOverlap)
 
 	kbService := service.NewKnowledgeBaseService(db, cfg.Embedding.Model)

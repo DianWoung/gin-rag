@@ -1,6 +1,6 @@
 # go-rag
 
-基于 `gin + gorm + mysql + Eino + Qdrant` 的 Go RAG MVP，包含知识库管理、文本文档/PDF 导入与切分入库、向量检索，以及 OpenAI 兼容的 `POST /v1/chat/completions` 接口。聊天模型和 embedding 模型现已分离配置，embedding 默认使用本地友好的 `bge-m3`。
+基于 `gin + gorm + mysql + Eino + Qdrant` 的 Go RAG MVP，包含知识库管理、文本文档/PDF 导入与切分入库、向量检索，以及 OpenAI 兼容的 `POST /v1/chat/completions` 接口。聊天模型和 embedding 模型现已分离配置，compose 默认内置本地 `bge-m3` embedding 服务。
 
 ## 架构
 
@@ -38,9 +38,10 @@ RAG 主链路：
 - `OPENAI_BASE_URL`: 聊天上游的 OpenAI 兼容地址，默认 `https://api.openai.com/v1`
 - `OPENAI_API_KEY`: 聊天上游 API Key，必填
 - `OPENAI_CHAT_MODEL`: 默认聊天模型，默认 `gpt-4o-mini`
-- `EMBEDDING_BASE_URL`: embedding 上游的 OpenAI 兼容地址；为空时回退到 `OPENAI_BASE_URL`
-- `EMBEDDING_API_KEY`: embedding 上游 API Key；为空时回退到 `OPENAI_API_KEY`
-- `EMBEDDING_MODEL`: 默认向量模型，默认 `bge-m3`
+- `EMBEDDING_BASE_URL`: embedding 上游的 OpenAI 兼容地址；默认推荐 `http://127.0.0.1:6008/v1`
+- `EMBEDDING_API_KEY`: embedding 上游 API Key；本地 TEI 服务通常可使用占位值 `-`
+- `EMBEDDING_MODEL`: 默认向量模型，建议与本地服务加载的模型 ID 保持一致，示例为 `BAAI/bge-m3`
+- `EMBEDDING_MODEL_ID`: 仅 compose 的 embedding 容器使用，默认 `BAAI/bge-m3`
 - `CHUNK_SIZE`: 切块大小，默认 `800`
 - `CHUNK_OVERLAP`: 切块重叠，默认 `120`
 
@@ -49,6 +50,7 @@ RAG 主链路：
 - 旧的 `OPENAI_EMBEDDING_MODEL` 仍可继续使用一段时间；当 `EMBEDDING_MODEL` 未设置时会回退到它
 - 若未设置 `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY`，embedding 侧会继续复用聊天侧的 `OPENAI_BASE_URL` / `OPENAI_API_KEY`
 - 新部署建议直接改用 `EMBEDDING_*` 三个变量，避免 chat 和 embedding 配置继续耦合
+- 即使 embedding 已切到本地服务，`app` 仍然要求 `OPENAI_API_KEY`，因为聊天侧没有改成本地模型
 
 ## 启动
 
@@ -66,35 +68,50 @@ go run ./cmd/server
 OPENAI_API_KEY=sk-xxxx docker compose up --build
 ```
 
-如果聊天走云端模型、embedding 走本地 OpenAI 兼容服务，推荐显式传入：
+默认 compose 接线：
+
+- `embedding`: `ghcr.io/huggingface/text-embeddings-inference:cpu-1.9`
+- `embedding` 对宿主机暴露 `6008`，对 compose 内 `app` 暴露 `http://embedding:80/v1`
+- `app` 默认使用 `EMBEDDING_BASE_URL=http://embedding:80/v1`
+- `app` 仍然必须提供 `OPENAI_API_KEY`
+
+如果聊天走云端模型、embedding 走 compose 内置本地服务，通常只需要：
 
 ```bash
 OPENAI_API_KEY=sk-chat \
-EMBEDDING_BASE_URL=http://127.0.0.1:6008/v1 \
-EMBEDDING_API_KEY=dummy \
-EMBEDDING_MODEL=bge-m3 \
-go run ./cmd/server
+docker compose up --build
 ```
 
-使用 Docker Compose 时，如果本地 embedding 服务跑在宿主机，`EMBEDDING_BASE_URL` 通常应改成 `http://host.docker.internal:6008/v1`：
+如果你不想用 compose 内置 embedding，而是改接外部 OpenAI 兼容 embedding 服务，可显式覆盖：
 
 ```bash
 OPENAI_API_KEY=sk-chat \
 EMBEDDING_BASE_URL=http://host.docker.internal:6008/v1 \
-EMBEDDING_API_KEY=dummy \
-EMBEDDING_MODEL=bge-m3 \
+EMBEDDING_API_KEY=- \
+EMBEDDING_MODEL=BAAI/bge-m3 \
 docker compose up --build
+```
+
+本地直接 `go run` 时，如果 embedding 仍使用 compose 启起来的本地服务：
+
+```bash
+OPENAI_API_KEY=sk-chat \
+EMBEDDING_BASE_URL=http://127.0.0.1:6008/v1 \
+EMBEDDING_API_KEY=- \
+EMBEDDING_MODEL=BAAI/bge-m3 \
+go run ./cmd/server
 ```
 
 `docker-compose.yml` 包含：
 
 - `mysql`
 - `qdrant`
+- `embedding`
 - `app`
 
-## 本地 bge-m3 embedding 服务接法
+## Compose 内置 bge-m3 embedding 服务
 
-embedding 侧仍然走 OpenAI-style `/v1/embeddings` client，所以本地服务只要兼容该协议即可。推荐配置如下：
+项目内置的 embedding 容器使用 Hugging Face Text Embeddings Inference，加载 `BAAI/bge-m3`，并通过 OpenAI-style `/v1/embeddings` 暴露给应用。默认配置如下：
 
 ```dotenv
 OPENAI_BASE_URL=https://api.openai.com/v1
@@ -102,15 +119,18 @@ OPENAI_API_KEY=sk-your-chat-key
 OPENAI_CHAT_MODEL=gpt-4o-mini
 
 EMBEDDING_BASE_URL=http://127.0.0.1:6008/v1
-EMBEDDING_API_KEY=dummy
-EMBEDDING_MODEL=bge-m3
+EMBEDDING_API_KEY=-
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_MODEL_ID=BAAI/bge-m3
 ```
 
 说明：
 
-- `EMBEDDING_BASE_URL` 指向本地服务的 `/v1` 根路径，服务内部需要提供 `POST /v1/embeddings`
-- `EMBEDDING_MODEL` 默认已经是 `bge-m3`，如果本地服务要求别名，可改成对应名称
-- `EMBEDDING_API_KEY` 是否真正校验取决于你的本地服务；多数本地兼容服务可接受任意字符串，因此示例使用 `dummy`
+- `EMBEDDING_BASE_URL` 指向本地服务的 `/v1` 根路径，实际请求为 `POST /v1/embeddings`
+- `EMBEDDING_MODEL_ID` 控制 compose 里 embedding 容器实际加载的模型
+- `EMBEDDING_MODEL` 是 app 发给 embedding 服务的模型名；默认与 `EMBEDDING_MODEL_ID` 保持一致
+- `EMBEDDING_API_KEY` 是否真正校验取决于本地服务；TEI 本地接法通常可使用占位值 `-`
+- 首次启动 embedding 容器会下载模型权重到 compose volume，冷启动时间取决于网络和机器性能
 
 ## 内部 API 示例
 

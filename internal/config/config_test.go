@@ -125,3 +125,16 @@ func TestLoadFromEnvFallsBackToLegacyEmbeddingEnv(t *testing.T) {
 		t.Fatalf("Embedding.Model = %s, want legacy-embedding", cfg.Embedding.Model)
 	}
 }
+
+func TestLoadFromEnvStillRequiresOpenAIAPIKeyWhenEmbeddingConfigured(t *testing.T) {
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("EMBEDDING_API_KEY", "-")
+	t.Setenv("EMBEDDING_BASE_URL", "http://127.0.0.1:6008/v1")
+	t.Setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want OPENAI_API_KEY required error")
+	}
+}

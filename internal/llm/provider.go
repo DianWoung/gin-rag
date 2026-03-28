@@ -48,6 +48,23 @@ func (p *Provider) NewChatModel(ctx context.Context, modelName string, temperatu
 	return chatModel, nil
 }
 
+func (p *Provider) PingEmbedding(ctx context.Context) error {
+	embedder, err := p.NewEmbedder(ctx, "")
+	if err != nil {
+		return fmt.Errorf("create embedder: %w", err)
+	}
+
+	vectors, err := embedder.EmbedStrings(ctx, []string{"ping"})
+	if err != nil {
+		return fmt.Errorf("embedding ping request: %w", err)
+	}
+	if len(vectors) == 0 || len(vectors[0]) == 0 {
+		return fmt.Errorf("embedding returned empty vectors")
+	}
+
+	return nil
+}
+
 func (p *Provider) NewEmbedder(ctx context.Context, modelName string) (embedding.Embedder, error) {
 	if modelName == "" {
 		modelName = p.embedding.Model
