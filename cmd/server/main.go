@@ -35,7 +35,9 @@ func main() {
 
 	provider := llm.NewProvider(cfg.Chat, cfg.Embedding)
 
-	if err := provider.PingEmbedding(ctx); err != nil {
+	pingCtx, pingCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer pingCancel()
+	if err := provider.PingEmbedding(pingCtx); err != nil {
 		log.Fatalf("ping embedding service: %v", err)
 	}
 	log.Println("embedding service is reachable")
@@ -60,6 +62,4 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("listen and serve: %v", err)
 	}
-
-	_ = ctx
 }
