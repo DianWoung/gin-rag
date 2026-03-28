@@ -16,13 +16,20 @@ import (
 	"github.com/dianwang-mac/go-rag/internal/apperr"
 	"github.com/dianwang-mac/go-rag/internal/entity"
 	"github.com/dianwang-mac/go-rag/internal/llm"
+	"github.com/dianwang-mac/go-rag/internal/rerank"
 	"github.com/dianwang-mac/go-rag/internal/store"
+)
+
+const (
+	retrievalTopK = 4  // final number of chunks fed to LLM
+	rerankFetchK  = 20 // broader recall when reranker is available
 )
 
 type ChatService struct {
 	db       *gorm.DB
 	vectors  *store.QdrantStore
 	provider *llm.Provider
+	reranker *rerank.Reranker // nil when reranking is disabled
 }
 
 type ragInput struct {
@@ -32,11 +39,12 @@ type ragInput struct {
 	EmbeddingModel string
 }
 
-func NewChatService(db *gorm.DB, vectors *store.QdrantStore, provider *llm.Provider) *ChatService {
+func NewChatService(db *gorm.DB, vectors *store.QdrantStore, provider *llm.Provider, reranker *rerank.Reranker) *ChatService {
 	return &ChatService{
 		db:       db,
 		vectors:  vectors,
 		provider: provider,
+		reranker: reranker,
 	}
 }
 
@@ -229,6 +237,25 @@ func joinHistory(history []*schema.Message) string {
 	return strings.Join(parts, "\n")
 }
 
+func (s *ChatService) rerankMatches(ctx context.Context, query string, matches []store.SearchResult) ([]store.SearchResult, error) {
+	texts := make([]string, len(matches))
+	for i, m := range matches {
+		texts[i] = m.Content
+	}
+
+	ranked, err := s.reranker.Rank(ctx, query, texts, retrievalTopK)
+	if err != nil {
+		return nil, fmt.Errorf("rerank: %w", err)
+	}
+
+	reranked := make([]store.SearchResult, len(ranked))
+	for i, r := range ranked {
+		reranked[i] = matches[r.Index]
+		reranked[i].Score = float32(r.Score)
+	}
+	return reranked, nil
+}
+
 func (s *ChatService) prepareChatRequest(ctx context.Context, req appdto.ChatRequest) (*entity.KnowledgeBase, string, []*schema.Message, error) {
 	kb, err := s.findKnowledgeBase(ctx, req)
 	if err != nil {
@@ -264,9 +291,23 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 			return nil, fmt.Errorf("embed question: %w", err)
 		}
 
-		matches, err := s.vectors.Search(ctx, in.CollectionName, vectors[0], 4)
+		// When reranker is available, cast a wider net and let the
+		// cross-encoder pick the best matches.
+		fetchK := uint64(retrievalTopK)
+		if s.reranker != nil {
+			fetchK = rerankFetchK
+		}
+
+		matches, err := s.vectors.Search(ctx, in.CollectionName, vectors[0], fetchK)
 		if err != nil {
 			return nil, err
+		}
+
+		if s.reranker != nil && len(matches) > 0 {
+			matches, err = s.rerankMatches(ctx, in.Question, matches)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		return buildPromptMessages(in.Question, in.History, matches), nil

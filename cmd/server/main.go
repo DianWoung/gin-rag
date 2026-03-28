@@ -13,6 +13,7 @@ import (
 	"github.com/dianwang-mac/go-rag/internal/handler"
 	"github.com/dianwang-mac/go-rag/internal/ingest"
 	"github.com/dianwang-mac/go-rag/internal/llm"
+	"github.com/dianwang-mac/go-rag/internal/rerank"
 	"github.com/dianwang-mac/go-rag/internal/server"
 	"github.com/dianwang-mac/go-rag/internal/service"
 	"github.com/dianwang-mac/go-rag/internal/store"
@@ -47,9 +48,15 @@ func main() {
 
 	splitter := ingest.NewSplitter(cfg.Chunking.ChunkSize, cfg.Chunking.ChunkOverlap)
 
+	var reranker *rerank.Reranker
+	if cfg.Reranker.BaseURL != "" {
+		reranker = rerank.New(cfg.Reranker.BaseURL)
+		log.Printf("reranker enabled: %s", cfg.Reranker.BaseURL)
+	}
+
 	kbService := service.NewKnowledgeBaseService(db, cfg.Embedding.Model)
 	documentService := service.NewDocumentService(db, splitter, vectorStore, provider)
-	chatService := service.NewChatService(db, vectorStore, provider)
+	chatService := service.NewChatService(db, vectorStore, provider, reranker)
 
 	internalAPI := handler.NewInternalAPIHandler(kbService, documentService)
 	openAI := handler.NewOpenAIHandler(chatService)

@@ -15,6 +15,7 @@ type Config struct {
 	Chat      ChatConfig
 	Embedding EmbeddingConfig
 	Chunking  ChunkingConfig
+	Reranker  RerankerConfig
 }
 
 type QdrantConfig struct {
@@ -37,6 +38,10 @@ type EmbeddingConfig struct {
 type ChunkingConfig struct {
 	ChunkSize    int
 	ChunkOverlap int
+}
+
+type RerankerConfig struct {
+	BaseURL string
 }
 
 func Load() (*Config, error) {
@@ -70,6 +75,9 @@ func Load() (*Config, error) {
 		Chunking: ChunkingConfig{
 			ChunkSize:    readInt("CHUNK_SIZE", 800),
 			ChunkOverlap: readInt("CHUNK_OVERLAP", 120),
+		},
+		Reranker: RerankerConfig{
+			BaseURL: readString("RERANKER_BASE_URL", ""),
 		},
 	}
 
