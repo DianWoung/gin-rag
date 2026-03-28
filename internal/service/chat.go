@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
+	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"gorm.io/gorm"
@@ -256,6 +259,39 @@ func (s *ChatService) rerankMatches(ctx context.Context, query string, matches [
 	return reranked, nil
 }
 
+const queryRewritePrompt = `Given the following conversation history and a follow-up question, ` +
+	`rewrite the follow-up question as a standalone question that captures the full intent. ` +
+	`Output ONLY the rewritten question with no preamble.`
+
+// rewriteQuery uses the LLM to condense conversation history and the latest
+// question into a single standalone retrieval query. This resolves pronouns,
+// omissions, and implicit references so that embedding search works correctly
+// for multi-turn conversations.
+func (s *ChatService) rewriteQuery(ctx context.Context, chatModel einomodel.BaseChatModel, question string, history []*schema.Message) (string, error) {
+	var historyText strings.Builder
+	for _, msg := range history {
+		historyText.WriteString(fmt.Sprintf("%s: %s\n", msg.Role, msg.Content))
+	}
+
+	messages := []*schema.Message{
+		{Role: schema.System, Content: queryRewritePrompt},
+		{Role: schema.User, Content: fmt.Sprintf("Conversation history:\n%s\nFollow-up question: %s", historyText.String(), question)},
+	}
+
+	resp, err := chatModel.Generate(ctx, messages)
+	if err != nil {
+		return "", fmt.Errorf("generate rewritten query: %w", err)
+	}
+
+	rewritten := strings.TrimSpace(resp.Content)
+	if rewritten == "" {
+		return question, nil
+	}
+
+	log.Printf("query rewrite: %q -> %q", question, rewritten)
+	return rewritten, nil
+}
+
 func (s *ChatService) prepareChatRequest(ctx context.Context, req appdto.ChatRequest) (*entity.KnowledgeBase, string, []*schema.Message, error) {
 	kb, err := s.findKnowledgeBase(ctx, req)
 	if err != nil {
@@ -286,7 +322,21 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 
 	chain := compose.NewChain[ragInput, *schema.Message]()
 	chain.AppendLambda(compose.InvokableLambda(func(ctx context.Context, in ragInput) ([]*schema.Message, error) {
-		vectors, err := embedder.EmbedStrings(ctx, []string{in.Question})
+		// When conversation history exists, rewrite the question into a
+		// standalone retrieval query so that pronouns and omissions are
+		// resolved before embedding.
+		retrievalQuery := in.Question
+		if len(in.History) > 0 {
+			rewritten, rwErr := s.rewriteQuery(ctx, chatModel, in.Question, in.History)
+			if rwErr != nil {
+				// Non-fatal: fall back to the original question.
+				log.Printf("query rewrite failed, using original question: %v", rwErr)
+			} else if rewritten != "" {
+				retrievalQuery = rewritten
+			}
+		}
+
+		vectors, err := embedder.EmbedStrings(ctx, []string{retrievalQuery})
 		if err != nil {
 			return nil, fmt.Errorf("embed question: %w", err)
 		}
@@ -303,12 +353,16 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 			return nil, err
 		}
 
+		reranked := false
 		if s.reranker != nil && len(matches) > 0 {
-			matches, err = s.rerankMatches(ctx, in.Question, matches)
+			matches, err = s.rerankMatches(ctx, retrievalQuery, matches)
 			if err != nil {
 				return nil, err
 			}
+			reranked = true
 		}
+
+		logRetrieval(in.Question, retrievalQuery, matches, reranked)
 
 		return buildPromptMessages(in.Question, in.History, matches), nil
 	}))
@@ -320,4 +374,28 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 	}
 
 	return runner, nil
+}
+
+// logRetrieval emits a structured log entry with retrieval metrics for offline
+// quality analysis.
+func logRetrieval(originalQuery, retrievalQuery string, matches []store.SearchResult, reranked bool) {
+	scores := make([]float64, 0, len(matches))
+	docIDs := make([]uint, 0, len(matches))
+	for _, m := range matches {
+		scores = append(scores, float64(m.Score))
+		docIDs = append(docIDs, m.DocumentID)
+	}
+
+	attrs := []any{
+		slog.String("original_query", originalQuery),
+		slog.Int("match_count", len(matches)),
+		slog.Bool("reranked", reranked),
+		slog.Any("scores", scores),
+		slog.Any("doc_ids", docIDs),
+	}
+	if retrievalQuery != originalQuery {
+		attrs = append(attrs, slog.String("retrieval_query", retrievalQuery))
+	}
+
+	slog.Info("retrieval", attrs...)
 }
