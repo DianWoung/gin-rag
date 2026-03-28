@@ -30,7 +30,8 @@ func (s *Splitter) Split(content string) []string {
 		return nil
 	}
 
-	if len(content) <= s.chunkSize {
+	runes := []rune(content)
+	if len(runes) <= s.chunkSize {
 		return []string{content}
 	}
 
@@ -40,18 +41,18 @@ func (s *Splitter) Split(content string) []string {
 	}
 
 	var chunks []string
-	for start := 0; start < len(content); start += step {
+	for start := 0; start < len(runes); start += step {
 		end := start + s.chunkSize
-		if end > len(content) {
-			end = len(content)
+		if end > len(runes) {
+			end = len(runes)
 		}
 
-		chunk := strings.TrimSpace(content[start:end])
+		chunk := strings.TrimSpace(string(runes[start:end]))
 		if chunk != "" {
 			chunks = append(chunks, chunk)
 		}
 
-		if end == len(content) {
+		if end == len(runes) {
 			break
 		}
 	}

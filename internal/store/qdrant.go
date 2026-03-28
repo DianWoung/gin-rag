@@ -52,8 +52,26 @@ func (s *QdrantStore) EnsureCollection(ctx context.Context, collectionName strin
 			Distance: qdrant.Distance_Cosine,
 		}),
 	})
-	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
+	if err == nil {
+		return nil
+	}
+
+	if !strings.Contains(strings.ToLower(err.Error()), "already exists") {
 		return fmt.Errorf("create qdrant collection: %w", err)
+	}
+
+	// Collection already exists — verify its vector dimension matches.
+	info, infoErr := s.client.GetCollectionInfo(ctx, collectionName)
+	if infoErr != nil {
+		return fmt.Errorf("get qdrant collection info: %w", infoErr)
+	}
+
+	existing := int(info.GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize())
+	if existing != dimension {
+		return fmt.Errorf(
+			"vector dimension mismatch: collection %q has dimension %d, but embedding model produces dimension %d (did you change the embedding model?)",
+			collectionName, existing, dimension,
+		)
 	}
 
 	return nil

@@ -153,11 +153,17 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (*
 		return nil, fmt.Errorf("embedding result is empty")
 	}
 
+	actualDim := len(vectors[0])
 	if kb.VectorDimension == 0 {
-		kb.VectorDimension = len(vectors[0])
+		kb.VectorDimension = actualDim
 		if err := s.db.WithContext(ctx).Save(&kb).Error; err != nil {
 			return nil, fmt.Errorf("update knowledge base dimension: %w", err)
 		}
+	} else if kb.VectorDimension != actualDim {
+		return nil, apperr.New(http.StatusBadRequest, fmt.Errorf(
+			"vector dimension mismatch: knowledge base expects %d, but embedding model %q produces %d (did you change the embedding model?)",
+			kb.VectorDimension, kb.EmbeddingModel, actualDim,
+		))
 	}
 
 	if err := s.vectors.EnsureCollection(ctx, kb.CollectionName, kb.VectorDimension); err != nil {
