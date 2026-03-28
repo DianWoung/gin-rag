@@ -1,0 +1,224 @@
+# go-rag
+
+基于 `gin + gorm + mysql + Eino + Qdrant` 的 Go RAG MVP，包含知识库管理、文本文档/PDF 导入与切分入库、向量检索，以及 OpenAI 兼容的 `POST /v1/chat/completions` 接口。聊天模型和 embedding 模型现已分离配置，embedding 默认使用本地友好的 `bge-m3`。
+
+## 架构
+
+- `cmd/server`: 服务启动入口
+- `internal/config`: 环境变量配置加载
+- `internal/entity`: MySQL 元数据模型
+- `internal/store`: MySQL 与 Qdrant 基础接入
+- `internal/service`: 知识库、文档入库、RAG Chat 核心逻辑
+- `internal/handler`: 内部 API 与 OpenAI 兼容接口
+- `internal/llm`: Eino OpenAI ChatModel 与 Embedder 初始化
+- `internal/ingest`: 简单文本切分器
+
+RAG 主链路：
+
+1. 文本文档或 PDF 通过内部 API 导入 MySQL。
+2. 触发索引时将文本切分、调用 Eino OpenAI Embedder 生成向量。
+3. 向量写入 Qdrant，元数据写入 `document_chunks`。
+4. 聊天请求进入 `POST /v1/chat/completions`。
+5. 服务按知识库检索 Qdrant 相似 chunk，用 Eino `Chain` 组织检索后的提示构造与生成；`stream=true` 时通过 SSE 按 chunk 向外刷出。
+
+## MySQL 元数据表
+
+- `knowledge_bases`
+- `documents`
+- `document_chunks`
+
+## 环境变量
+
+参考 [`.env.example`](/Users/dianwang-mac/Documents/workspace/go-rag/.env.example)：
+
+- `APP_PORT`: HTTP 端口，默认 `8080`
+- `MYSQL_DSN`: MySQL 连接串，必填
+- `QDRANT_HOST`: Qdrant 主机，默认 `127.0.0.1`
+- `QDRANT_GRPC_PORT`: Qdrant gRPC 端口，默认 `6334`
+- `OPENAI_BASE_URL`: 聊天上游的 OpenAI 兼容地址，默认 `https://api.openai.com/v1`
+- `OPENAI_API_KEY`: 聊天上游 API Key，必填
+- `OPENAI_CHAT_MODEL`: 默认聊天模型，默认 `gpt-4o-mini`
+- `EMBEDDING_BASE_URL`: embedding 上游的 OpenAI 兼容地址；为空时回退到 `OPENAI_BASE_URL`
+- `EMBEDDING_API_KEY`: embedding 上游 API Key；为空时回退到 `OPENAI_API_KEY`
+- `EMBEDDING_MODEL`: 默认向量模型，默认 `bge-m3`
+- `CHUNK_SIZE`: 切块大小，默认 `800`
+- `CHUNK_OVERLAP`: 切块重叠，默认 `120`
+
+兼容说明：
+
+- 旧的 `OPENAI_EMBEDDING_MODEL` 仍可继续使用一段时间；当 `EMBEDDING_MODEL` 未设置时会回退到它
+- 若未设置 `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY`，embedding 侧会继续复用聊天侧的 `OPENAI_BASE_URL` / `OPENAI_API_KEY`
+- 新部署建议直接改用 `EMBEDDING_*` 三个变量，避免 chat 和 embedding 配置继续耦合
+
+## 启动
+
+### 本地
+
+```bash
+cp .env.example .env
+go mod tidy
+go run ./cmd/server
+```
+
+### Docker Compose
+
+```bash
+OPENAI_API_KEY=sk-xxxx docker compose up --build
+```
+
+如果聊天走云端模型、embedding 走本地 OpenAI 兼容服务，推荐显式传入：
+
+```bash
+OPENAI_API_KEY=sk-chat \
+EMBEDDING_BASE_URL=http://127.0.0.1:6008/v1 \
+EMBEDDING_API_KEY=dummy \
+EMBEDDING_MODEL=bge-m3 \
+go run ./cmd/server
+```
+
+使用 Docker Compose 时，如果本地 embedding 服务跑在宿主机，`EMBEDDING_BASE_URL` 通常应改成 `http://host.docker.internal:6008/v1`：
+
+```bash
+OPENAI_API_KEY=sk-chat \
+EMBEDDING_BASE_URL=http://host.docker.internal:6008/v1 \
+EMBEDDING_API_KEY=dummy \
+EMBEDDING_MODEL=bge-m3 \
+docker compose up --build
+```
+
+`docker-compose.yml` 包含：
+
+- `mysql`
+- `qdrant`
+- `app`
+
+## 本地 bge-m3 embedding 服务接法
+
+embedding 侧仍然走 OpenAI-style `/v1/embeddings` client，所以本地服务只要兼容该协议即可。推荐配置如下：
+
+```dotenv
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_API_KEY=sk-your-chat-key
+OPENAI_CHAT_MODEL=gpt-4o-mini
+
+EMBEDDING_BASE_URL=http://127.0.0.1:6008/v1
+EMBEDDING_API_KEY=dummy
+EMBEDDING_MODEL=bge-m3
+```
+
+说明：
+
+- `EMBEDDING_BASE_URL` 指向本地服务的 `/v1` 根路径，服务内部需要提供 `POST /v1/embeddings`
+- `EMBEDDING_MODEL` 默认已经是 `bge-m3`，如果本地服务要求别名，可改成对应名称
+- `EMBEDDING_API_KEY` 是否真正校验取决于你的本地服务；多数本地兼容服务可接受任意字符串，因此示例使用 `dummy`
+
+## 内部 API 示例
+
+创建知识库：
+
+```bash
+curl -X POST http://localhost:8080/api/knowledge-bases \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "demo-kb",
+    "description": "MVP knowledge base"
+  }'
+```
+
+导入文本文档：
+
+```bash
+curl -X POST http://localhost:8080/api/documents/import-text \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "knowledge_base_id": 1,
+    "title": "intro.txt",
+    "content": "RAG means retrieval augmented generation."
+  }'
+```
+
+或 multipart 上传：
+
+```bash
+curl -X POST http://localhost:8080/api/documents/import-text \
+  -F knowledge_base_id=1 \
+  -F title=intro.txt \
+  -F file=@./intro.txt
+```
+
+导入 PDF：
+
+```bash
+curl -X POST http://localhost:8080/api/documents/import-pdf \
+  -F knowledge_base_id=1 \
+  -F title=rag-intro.pdf \
+  -F file=@./rag-intro.pdf
+```
+
+说明：
+
+- PDF 导入会先抽取纯文本，再复用现有 `documents` 存储和后续 `/api/documents/:id/index` 的切分、向量化、Qdrant 入库流程
+- 当前使用 `github.com/ledongthuc/pdf` 做文本提取
+- 不包含 OCR，扫描版 PDF 或以图片为主的 PDF 可能提取不到文本
+- 多栏、复杂排版、表格类 PDF 的文本顺序可能与视觉顺序不完全一致
+
+触发切分与向量入库：
+
+```bash
+curl -X POST http://localhost:8080/api/documents/1/index
+```
+
+查询文档列表：
+
+```bash
+curl 'http://localhost:8080/api/documents?knowledge_base_id=1'
+```
+
+## OpenAI 兼容接口
+
+当前实现：
+
+- `POST /v1/chat/completions`
+- 支持 `model`、`messages`、`temperature`、`stream`
+- `stream=false` 返回标准 JSON
+- `stream=true` 返回 `text/event-stream`，以 OpenAI chat completions SSE 风格输出 `data: {...}` chunk，最后 `data: [DONE]`
+- 额外支持 `knowledge_base_id` 或 `knowledge_base_name` 选择检索范围
+
+示例：
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gpt-4o-mini",
+    "knowledge_base_id": 1,
+    "temperature": 0.2,
+    "stream": false,
+    "messages": [
+      {"role": "user", "content": "RAG 是什么？"}
+    ]
+  }'
+```
+
+流式示例：
+
+```bash
+curl -N http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gpt-4o-mini",
+    "knowledge_base_id": 1,
+    "stream": true,
+    "messages": [
+      {"role": "user", "content": "RAG 是什么？"}
+    ]
+  }'
+```
+
+## 已知限制
+
+- PDF 仅做文本提取，不支持 OCR
+- 索引流程为同步执行
+- 流式输出当前聚焦文本 `delta.content`，未实现工具调用等更复杂的 OpenAI stream 字段
+- token usage 为近似估算，不是上游精确统计
+- 未实现认证、删除、重建索引、复杂过滤
