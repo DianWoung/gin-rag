@@ -96,3 +96,20 @@ func TestNewRouterProtectsOnlyAdminRoutes(t *testing.T) {
 		t.Fatalf("chat status = %d, want %d, body = %s", chatResp.Code, http.StatusOK, chatResp.Body.String())
 	}
 }
+
+func TestNewRouterServesWebConsoleWithoutAdminAuth(t *testing.T) {
+	internalAPI := handler.NewInternalAPIHandler(routerTestKnowledgeBaseService{}, routerTestDocumentService{})
+	openAI := handler.NewOpenAIHandler(routerTestChatService{})
+	router := NewRouter("test-admin-key", internalAPI, openAI)
+
+	req := httptest.NewRequest(http.MethodGet, "/web/", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte("RAG Manual Debug Console")) {
+		t.Fatalf("body missing web console marker, got: %s", resp.Body.String())
+	}
+}

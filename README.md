@@ -249,6 +249,21 @@ go run ./cmd/server
 - `embedding`
 - `app`
 
+## 人工联调页面
+
+服务启动后可直接访问：
+
+- `http://localhost:8080/web/`
+
+这个页面用于人工联调与评测调试，覆盖：
+
+- 创建知识库
+- 文本/PDF 导入
+- 文档索引
+- 非流式/流式聊天
+- Phoenix 最新 trace 抓取与详情查看
+- 一键生成 `evalctl run-trace` 命令
+
 ## Compose 内置 all-MiniLM-L6-v2 embedding 服务
 
 项目内置的 embedding 容器使用 Hugging Face Text Embeddings Inference，加载 `sentence-transformers/all-MiniLM-L6-v2`，并通过 OpenAI-style `/v1/embeddings` 暴露给应用。默认配置如下：

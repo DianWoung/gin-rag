@@ -7,6 +7,7 @@ import (
 
 	"github.com/dianwang-mac/go-rag/internal/handler"
 	"github.com/dianwang-mac/go-rag/internal/observability"
+	webui "github.com/dianwang-mac/go-rag/web"
 )
 
 func NewRouter(adminAPIKey string, internalAPI *handler.InternalAPIHandler, openAI *handler.OpenAIHandler) *gin.Engine {
@@ -16,6 +17,10 @@ func NewRouter(adminAPIKey string, internalAPI *handler.InternalAPIHandler, open
 	router.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	router.GET("/", func(c *gin.Context) {
+		c.Redirect(http.StatusFound, "/web/")
+	})
+	router.StaticFS("/web", webui.FileSystem())
 
 	api := router.Group("/api")
 	api.Use(handler.AdminAuthMiddleware(adminAPIKey))

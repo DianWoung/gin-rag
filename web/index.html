@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAG Manual Debug Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-orb bg-orb-a"></div>
+    <div class="bg-orb bg-orb-b"></div>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">GO RAG / Manual Debug</p>
+        <h1>联调与评测调试工作台</h1>
+        <p class="subtitle">
+          One page for create → import → index → chat → trace inspection. Built
+          for local debugging, not production operations.
+        </p>
+      </header>
+
+      <section class="panel panel-config">
+        <h2>Runtime Config</h2>
+        <div class="form-grid">
+          <label>
+            API Base
+            <input id="apiBase" type="text" />
+          </label>
+          <label>
+            Phoenix Base
+            <input id="phoenixBase" type="text" />
+          </label>
+          <label>
+            Phoenix Project
+            <input id="phoenixProject" type="text" value="go-rag" />
+          </label>
+          <label>
+            Admin API Key
+            <input id="adminKey" type="password" value="change-me" />
+          </label>
+          <label>
+            Chat Model
+            <input id="chatModel" type="text" value="deepseek-chat" />
+          </label>
+          <label>
+            MYSQL_DSN (for evalctl cmd)
+            <input
+              id="mysqlDsn"
+              type="text"
+              value="rag:rag@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local"
+            />
+          </label>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="column">
+          <article class="panel">
+            <h2>1) Knowledge Base</h2>
+            <div class="row">
+              <label>
+                Name
+                <input id="kbName" type="text" value="web-debug-kb" />
+              </label>
+              <button id="createKbBtn" class="btn primary">Create KB</button>
+            </div>
+            <p class="meta">Current KB ID: <span id="kbId">-</span></p>
+          </article>
+
+          <article class="panel">
+            <h2>2) Import</h2>
+            <div class="stack">
+              <label>
+                Text Title
+                <input id="textTitle" type="text" value="debug.txt" />
+              </label>
+              <label>
+                Text Content
+                <textarea id="textContent" rows="4">
+Manual debug seed: metadata in MySQL, vectors in Qdrant, admin API is protected by ADMIN_API_KEY.</textarea
+                >
+              </label>
+              <button id="importTextBtn" class="btn">Import Text</button>
+            </div>
+            <hr />
+            <div class="stack">
+              <label>
+                PDF File
+                <input id="pdfFile" type="file" accept="application/pdf" />
+              </label>
+              <button id="importPdfBtn" class="btn">Import PDF</button>
+            </div>
+            <p class="meta">Current Document ID: <span id="docId">-</span></p>
+          </article>
+
+          <article class="panel">
+            <h2>3) Index + Chat</h2>
+            <div class="row split">
+              <button id="indexDocBtn" class="btn primary">Index Document</button>
+              <button id="listDocsBtn" class="btn">List Documents</button>
+            </div>
+            <label>
+              Question
+              <textarea id="chatQuestion" rows="3">
+ADMIN_API_KEY 是做什么的？元数据和向量分别存在哪里？</textarea
+              >
+            </label>
+            <div class="row split">
+              <button id="chatBtn" class="btn primary">Chat (Non-Stream)</button>
+              <button id="chatStreamBtn" class="btn">Chat (Stream)</button>
+            </div>
+          </article>
+
+          <article class="panel">
+            <h2>4) Trace / Eval Debug</h2>
+            <div class="row split">
+              <button id="latestTraceBtn" class="btn primary">
+                Get Latest Chat Trace
+              </button>
+              <button id="traceDetailBtn" class="btn">Load Trace Detail</button>
+            </div>
+            <p class="meta">Current Trace ID: <span id="traceId">-</span></p>
+            <label>
+              Suggested `evalctl` command
+              <textarea id="evalCmd" rows="4" readonly></textarea>
+            </label>
+          </article>
+        </div>
+
+        <div class="column">
+          <article class="panel panel-output">
+            <h2>Response / Logs</h2>
+            <div class="tabs">
+              <button class="tab active" data-tab="json">JSON</button>
+              <button class="tab" data-tab="stream">Stream</button>
+              <button class="tab" data-tab="trace">Trace</button>
+              <button class="tab" data-tab="logs">Logs</button>
+            </div>
+            <pre id="jsonOutput" class="output active"></pre>
+            <pre id="streamOutput" class="output"></pre>
+            <pre id="traceOutput" class="output"></pre>
+            <pre id="logOutput" class="output"></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>
