@@ -7,6 +7,8 @@ import (
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/dianwang-mac/go-rag/internal/tracebridge"
 )
 
 type ChatModelFactory interface {
@@ -34,7 +36,7 @@ func ReplayChatSample(ctx context.Context, factory ChatModelFactory, stored Stor
 		}, nil
 	}
 
-	messages := parsePromptMessages(sample.Prompt)
+	messages := replayMessages(sample)
 	resp, err := model.Generate(ctx, messages)
 	if err != nil {
 		return ReplayRun{
@@ -55,6 +57,23 @@ func ReplayChatSample(ctx context.Context, factory ChatModelFactory, stored Stor
 		Answer:      strings.TrimSpace(resp.Content),
 		Status:      "completed",
 	}, nil
+}
+
+func replayMessages(sample tracebridge.ChatSample) []*schema.Message {
+	if len(sample.PromptMessages) > 0 {
+		messages := make([]*schema.Message, 0, len(sample.PromptMessages))
+		for _, message := range sample.PromptMessages {
+			messages = append(messages, &schema.Message{
+				Role:    schema.RoleType(strings.ToLower(strings.TrimSpace(message.Role))),
+				Content: message.Content,
+			})
+		}
+		if len(messages) > 0 {
+			return messages
+		}
+	}
+
+	return parsePromptMessages(sample.Prompt)
 }
 
 func parsePromptMessages(prompt string) []*schema.Message {
