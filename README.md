@@ -101,6 +101,7 @@ PHOENIX_API_KEY=your-phoenix-api-key
 - 从 Phoenix 项目里拉取对应 trace 的 spans
 - 识别 `http.v1.chat_completions` trace
 - 抽取 question、prompt、answer、retrieved chunks、知识库信息、模型配置
+- 对新导出的样本额外保存结构化 prompt messages，避免多段 system prompt 在 replay 时被错误拆分
 - 把样本持久化到 MySQL 的 `sample_records`
 - 输出标准化 JSON，包含 `sample_id`
 
@@ -117,7 +118,7 @@ go run ./cmd/evalctl replay-sample <sample_id>
 `replay-sample` 会：
 
 - 从 MySQL 读取导出的样本
-- 复用样本里的 prompt、model、temperature
+- 优先复用样本里保存的结构化 prompt messages；旧样本再回退到扁平 prompt 文本解析
 - 重新调用当前 chat model 生成答案
 - 把回放结果持久化到 `replay_run_records`
 
