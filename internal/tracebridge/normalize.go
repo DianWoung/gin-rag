@@ -1,6 +1,7 @@
 package tracebridge
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -51,6 +52,11 @@ func NormalizeChatTrace(trace phoenix.TraceEnvelope) (ChatSample, []ExportWarnin
 		})
 	}
 
+	promptMessages, err := promptMessagesAttr(promptSpan.Attributes, observability.AttrPromptMessagesJSON)
+	if err != nil {
+		return ChatSample{}, nil, err
+	}
+
 	chunkTexts := splitJoinedText(stringAttr(promptSpan.Attributes, observability.AttrRetrievedChunks))
 	chunks := make([]RetrievedChunk, 0, len(chunkTexts))
 	for index, content := range chunkTexts {
@@ -73,6 +79,7 @@ func NormalizeChatTrace(trace phoenix.TraceEnvelope) (ChatSample, []ExportWarnin
 		Question:          question,
 		Answer:            answer,
 		Prompt:            prompt,
+		PromptMessages:    promptMessages,
 		Model:             stringAttr(chatSpan.Attributes, "rag.model"),
 		Temperature:       float32(numberAttr(chatSpan.Attributes, "rag.temperature")),
 		KnowledgeBaseID:   uint(intAttr(chatSpan.Attributes, observability.AttrKnowledgeBaseID)),
@@ -165,4 +172,18 @@ func splitJoinedText(value string) []string {
 
 func isTruncated(value string) bool {
 	return strings.Contains(value, "...(truncated)")
+}
+
+func promptMessagesAttr(attrs map[string]any, key string) ([]PromptMessage, error) {
+	raw := stringAttr(attrs, key)
+	if raw == "" {
+		return nil, nil
+	}
+
+	var messages []PromptMessage
+	if err := json.Unmarshal([]byte(raw), &messages); err != nil {
+		return nil, fmt.Errorf("decode prompt messages: %w", err)
+	}
+
+	return messages, nil
 }

@@ -19,6 +19,7 @@ const (
 	AttrQuestion          = "rag.question"
 	AttrAnswer            = "rag.answer"
 	AttrPrompt            = "rag.prompt"
+	AttrPromptMessagesJSON = "rag.prompt_messages_json"
 	AttrOriginalQuery     = "rag.query.original"
 	AttrRewrittenQuery    = "rag.query.rewritten"
 	AttrRetrievedChunks   = "rag.retrieved_chunks"

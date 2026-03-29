@@ -7,6 +7,7 @@ type ChatSample struct {
 	Question          string          `json:"question"`
 	Answer            string          `json:"answer"`
 	Prompt            string          `json:"prompt"`
+	PromptMessages    []PromptMessage `json:"prompt_messages,omitempty"`
 	Model             string          `json:"model,omitempty"`
 	Temperature       float32         `json:"temperature,omitempty"`
 	KnowledgeBaseID   uint            `json:"knowledge_base_id,omitempty"`
@@ -14,6 +15,11 @@ type ChatSample struct {
 	CollectionName    string          `json:"collection_name,omitempty"`
 	EmbeddingModel    string          `json:"embedding_model,omitempty"`
 	Chunks            []RetrievedChunk `json:"chunks,omitempty"`
+}
+
+type PromptMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type RetrievedChunk struct {

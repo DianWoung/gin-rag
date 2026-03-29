@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ import (
 	"github.com/dianwang-mac/go-rag/internal/rerank"
 	"github.com/dianwang-mac/go-rag/internal/store"
 	"go.opentelemetry.io/otel/attribute"
- )
+)
 
 const (
 	retrievalTopK = 4  // final number of chunks fed to LLM
@@ -481,7 +482,10 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 		)
 		defer func() {
 			if len(messages) > 0 {
-				promptSpan.SetAttributes(observability.TextAttribute(observability.AttrPrompt, flattenMessages(messages)))
+				promptSpan.SetAttributes(
+					observability.TextAttribute(observability.AttrPrompt, flattenMessages(messages)),
+					observability.TextAttribute(observability.AttrPromptMessagesJSON, encodePromptMessages(messages)),
+				)
 			}
 			observability.RecordError(promptSpan, err)
 			promptSpan.End()
@@ -647,6 +651,23 @@ func flattenMessages(messages []*schema.Message) string {
 	}
 
 	return strings.Join(parts, "\n\n")
+}
+
+func encodePromptMessages(messages []*schema.Message) string {
+	encoded := make([]map[string]string, 0, len(messages))
+	for _, message := range messages {
+		encoded = append(encoded, map[string]string{
+			"role":    string(message.Role),
+			"content": message.Content,
+		})
+	}
+
+	payload, err := json.Marshal(encoded)
+	if err != nil {
+		return ""
+	}
+
+	return string(payload)
 }
 
 func matchContents(matches []store.SearchResult) []string {

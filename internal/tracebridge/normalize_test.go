@@ -8,6 +8,53 @@ import (
 	"github.com/dianwang-mac/go-rag/internal/phoenix"
 )
 
+func TestNormalizeChatTraceExportsPromptMessages(t *testing.T) {
+	now := time.Date(2026, 3, 29, 10, 0, 0, 0, time.UTC)
+	trace := phoenix.TraceEnvelope{
+		ProjectName: "go-rag",
+		TraceID:     "trace-456",
+		RootSpan: &phoenix.TraceSpan{
+			Name: "http.v1.chat_completions",
+		},
+		Spans: []phoenix.TraceSpan{
+			{
+				Name: "http.v1.chat_completions",
+			},
+			{
+				Name: observability.SpanChatCompletion,
+				Attributes: map[string]any{
+					observability.AttrQuestion: "什么是 RAG",
+				},
+				StartTime: now,
+				EndTime:   now.Add(time.Second),
+			},
+			{
+				Name: observability.SpanChatRAGPrompt,
+				Attributes: map[string]any{
+					observability.AttrPrompt: "system: use context\n\nuser: 什么是 RAG",
+					"rag.prompt_messages_json": `[{"role":"system","content":"use context"},{"role":"user","content":"什么是 RAG"}]`,
+				},
+				StartTime: now,
+				EndTime:   now.Add(500 * time.Millisecond),
+			},
+		},
+	}
+
+	sample, _, err := NormalizeChatTrace(trace)
+	if err != nil {
+		t.Fatalf("NormalizeChatTrace() error = %v", err)
+	}
+	if len(sample.PromptMessages) != 2 {
+		t.Fatalf("PromptMessages count = %d, want 2", len(sample.PromptMessages))
+	}
+	if sample.PromptMessages[0] != (PromptMessage{Role: "system", Content: "use context"}) {
+		t.Fatalf("PromptMessages[0] = %+v", sample.PromptMessages[0])
+	}
+	if sample.PromptMessages[1] != (PromptMessage{Role: "user", Content: "什么是 RAG"}) {
+		t.Fatalf("PromptMessages[1] = %+v", sample.PromptMessages[1])
+	}
+}
+
 func TestNormalizeChatTraceBuildsPromptAndChunks(t *testing.T) {
 	now := time.Date(2026, 3, 29, 10, 0, 0, 0, time.UTC)
 	trace := phoenix.TraceEnvelope{
