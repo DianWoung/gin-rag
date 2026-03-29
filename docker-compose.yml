@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
     command:
       - --model-id
-      - ${EMBEDDING_MODEL_ID:-BAAI/bge-m3}
+      - ${EMBEDDING_MODEL_ID:-sentence-transformers/all-MiniLM-L6-v2}
     ports:
       - "6008:80"
     volumes:
@@ -40,12 +40,13 @@ services:
       start_period: 60s
 
   app:
-    image: golang:1.25
-    working_dir: /app
-    command: sh -c "go mod tidy && go run ./cmd/server"
+    build:
+      context: .
+      dockerfile: Dockerfile
     environment:
       APP_PORT: 8080
       MYSQL_DSN: rag:rag@tcp(mysql:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-change-me}
       QDRANT_HOST: qdrant
       QDRANT_GRPC_PORT: 6334
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
@@ -53,11 +54,9 @@ services:
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4o-mini}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://embedding:80/v1}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:--}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       CHUNK_SIZE: 800
       CHUNK_OVERLAP: 120
-    volumes:
-      - .:/app
     depends_on:
       embedding:
         condition: service_healthy

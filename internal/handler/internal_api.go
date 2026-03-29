@@ -233,9 +233,5 @@ func parseImportPDFRequest(c *gin.Context) (appdto.ImportPDFDocumentRequest, err
 		return req, nil
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		return req, badRequest("invalid pdf document payload")
-	}
-
-	return req, nil
+	return req, badRequest("pdf multipart upload is required")
 }

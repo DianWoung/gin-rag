@@ -1,6 +1,6 @@
 # go-rag
 
-基于 `gin + gorm + mysql + Eino + Qdrant` 的 Go RAG MVP，包含知识库管理、文本文档/PDF 导入与切分入库、向量检索，以及 OpenAI 兼容的 `POST /v1/chat/completions` 接口。聊天模型和 embedding 模型现已分离配置，compose 默认内置本地 `bge-m3` embedding 服务。
+基于 `gin + gorm + mysql + Eino + Qdrant` 的 Go RAG MVP，包含知识库管理、文本文档/PDF 导入与切分入库、向量检索，以及 OpenAI 兼容的 `POST /v1/chat/completions` 接口。聊天模型和 embedding 模型现已分离配置，compose 默认内置本地 `all-MiniLM-L6-v2` embedding 服务。
 
 ## 架构
 
@@ -50,6 +50,7 @@ RAG 系统的质量保障采用三层闭环：
 
 - `APP_PORT`: HTTP 端口，默认 `8080`
 - `MYSQL_DSN`: MySQL 连接串，必填
+- `ADMIN_API_KEY`: `/api/*` 管理面鉴权 key，必填
 - `QDRANT_HOST`: Qdrant 主机，默认 `127.0.0.1`
 - `QDRANT_GRPC_PORT`: Qdrant gRPC 端口，默认 `6334`
 - `OPENAI_BASE_URL`: 聊天上游的 OpenAI 兼容地址，默认 `https://api.openai.com/v1`
@@ -57,8 +58,8 @@ RAG 系统的质量保障采用三层闭环：
 - `OPENAI_CHAT_MODEL`: 默认聊天模型，默认 `gpt-4o-mini`
 - `EMBEDDING_BASE_URL`: embedding 上游的 OpenAI 兼容地址；默认推荐 `http://127.0.0.1:6008/v1`
 - `EMBEDDING_API_KEY`: embedding 上游 API Key；本地 TEI 服务通常可使用占位值 `-`
-- `EMBEDDING_MODEL`: 默认向量模型，建议与本地服务加载的模型 ID 保持一致，示例为 `BAAI/bge-m3`
-- `EMBEDDING_MODEL_ID`: 仅 compose 的 embedding 容器使用，默认 `BAAI/bge-m3`
+- `EMBEDDING_MODEL`: 默认向量模型，建议与本地服务加载的模型 ID 保持一致，默认 `sentence-transformers/all-MiniLM-L6-v2`
+- `EMBEDDING_MODEL_ID`: 仅 compose 的 embedding 容器使用，默认 `sentence-transformers/all-MiniLM-L6-v2`
 - `CHUNK_SIZE`: 切块大小，默认 `800`
 - `CHUNK_OVERLAP`: 切块重叠，默认 `120`
 - `PHOENIX_TRACING_ENABLED`: 是否启用 Phoenix tracing；默认在未配置时关闭
@@ -74,6 +75,7 @@ RAG 系统的质量保障采用三层闭环：
 - 若未设置 `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY`，embedding 侧会继续复用聊天侧的 `OPENAI_BASE_URL` / `OPENAI_API_KEY`
 - 新部署建议直接改用 `EMBEDDING_*` 三个变量，避免 chat 和 embedding 配置继续耦合
 - 即使 embedding 已切到本地服务，`app` 仍然要求 `OPENAI_API_KEY`，因为聊天侧没有改成本地模型
+- `/api/*` 管理接口需要 `Authorization: Bearer <ADMIN_API_KEY>` 或 `X-API-Key: <ADMIN_API_KEY>`；`/v1/chat/completions` 不使用这条管理鉴权
 - Phoenix tracing 启用后会自动把 `PHOENIX_PROJECT_NAME` 写入 OpenInference resource attribute，并用 `authorization: Bearer <PHOENIX_API_KEY>` 向 OTLP endpoint 发送 trace
 
 ## Phoenix Trace Export
@@ -174,16 +176,24 @@ go mod tidy
 go run ./cmd/server
 ```
 
+说明：
+
+- `/api/*` 管理接口必须携带 `Authorization: Bearer <ADMIN_API_KEY>`
+- `/v1/chat/completions` 不使用这条管理鉴权
+
 ### Docker Compose
 
 ```bash
-OPENAI_API_KEY=sk-xxxx docker compose up --build
+OPENAI_API_KEY=sk-xxxx \
+ADMIN_API_KEY=change-me \
+docker compose up --build
 ```
 
 如果你要连 Phoenix 一起拉起来，改用：
 
 ```bash
 OPENAI_API_KEY=sk-xxxx \
+ADMIN_API_KEY=change-me \
 docker compose -f docker-compose.yml -f docker-compose.phoenix.yml up --build
 ```
 
@@ -192,7 +202,7 @@ docker compose -f docker-compose.yml -f docker-compose.phoenix.yml up --build
 - `embedding`: `ghcr.io/huggingface/text-embeddings-inference:cpu-1.9`
 - `embedding` 对宿主机暴露 `6008`，对 compose 内 `app` 暴露 `http://embedding:80/v1`
 - `app` 默认使用 `EMBEDDING_BASE_URL=http://embedding:80/v1`
-- `app` 仍然必须提供 `OPENAI_API_KEY`
+- `app` 仍然必须提供 `OPENAI_API_KEY` 和 `ADMIN_API_KEY`
 
 启用 `docker-compose.phoenix.yml` 后，额外会有：
 
@@ -205,6 +215,7 @@ docker compose -f docker-compose.yml -f docker-compose.phoenix.yml up --build
 
 ```bash
 OPENAI_API_KEY=sk-chat \
+ADMIN_API_KEY=change-me \
 docker compose up --build
 ```
 
@@ -212,19 +223,21 @@ docker compose up --build
 
 ```bash
 OPENAI_API_KEY=sk-chat \
+ADMIN_API_KEY=change-me \
 EMBEDDING_BASE_URL=http://host.docker.internal:6008/v1 \
 EMBEDDING_API_KEY=- \
-EMBEDDING_MODEL=BAAI/bge-m3 \
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 \
 docker compose up --build
 ```
 
 本地直接 `go run` 时，如果 embedding 仍使用 compose 启起来的本地服务：
 
 ```bash
+ADMIN_API_KEY=change-me \
 OPENAI_API_KEY=sk-chat \
 EMBEDDING_BASE_URL=http://127.0.0.1:6008/v1 \
 EMBEDDING_API_KEY=- \
-EMBEDDING_MODEL=BAAI/bge-m3 \
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 \
 go run ./cmd/server
 ```
 
@@ -235,9 +248,9 @@ go run ./cmd/server
 - `embedding`
 - `app`
 
-## Compose 内置 bge-m3 embedding 服务
+## Compose 内置 all-MiniLM-L6-v2 embedding 服务
 
-项目内置的 embedding 容器使用 Hugging Face Text Embeddings Inference，加载 `BAAI/bge-m3`，并通过 OpenAI-style `/v1/embeddings` 暴露给应用。默认配置如下：
+项目内置的 embedding 容器使用 Hugging Face Text Embeddings Inference，加载 `sentence-transformers/all-MiniLM-L6-v2`，并通过 OpenAI-style `/v1/embeddings` 暴露给应用。默认配置如下：
 
 ```dotenv
 OPENAI_BASE_URL=https://api.openai.com/v1
@@ -246,8 +259,8 @@ OPENAI_CHAT_MODEL=gpt-4o-mini
 
 EMBEDDING_BASE_URL=http://127.0.0.1:6008/v1
 EMBEDDING_API_KEY=-
-EMBEDDING_MODEL=BAAI/bge-m3
-EMBEDDING_MODEL_ID=BAAI/bge-m3
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+EMBEDDING_MODEL_ID=sentence-transformers/all-MiniLM-L6-v2
 ```
 
 说明：
@@ -257,13 +270,21 @@ EMBEDDING_MODEL_ID=BAAI/bge-m3
 - `EMBEDDING_MODEL` 是 app 发给 embedding 服务的模型名；默认与 `EMBEDDING_MODEL_ID` 保持一致
 - `EMBEDDING_API_KEY` 是否真正校验取决于本地服务；TEI 本地接法通常可使用占位值 `-`
 - 首次启动 embedding 容器会下载模型权重到 compose volume，冷启动时间取决于网络和机器性能
+- 如果你的机器资源足够，也可以显式把 `EMBEDDING_MODEL_ID` / `EMBEDDING_MODEL` 改回 `BAAI/bge-m3`
 
 ## 内部 API 示例
+
+所有 `/api/*` 示例都需要带上：
+
+```bash
+-H 'Authorization: Bearer change-me'
+```
 
 创建知识库：
 
 ```bash
 curl -X POST http://localhost:8080/api/knowledge-bases \
+  -H 'Authorization: Bearer change-me' \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "demo-kb",
@@ -275,6 +296,7 @@ curl -X POST http://localhost:8080/api/knowledge-bases \
 
 ```bash
 curl -X POST http://localhost:8080/api/documents/import-text \
+  -H 'Authorization: Bearer change-me' \
   -H 'Content-Type: application/json' \
   -d '{
     "knowledge_base_id": 1,
@@ -287,6 +309,7 @@ curl -X POST http://localhost:8080/api/documents/import-text \
 
 ```bash
 curl -X POST http://localhost:8080/api/documents/import-text \
+  -H 'Authorization: Bearer change-me' \
   -F knowledge_base_id=1 \
   -F title=intro.txt \
   -F file=@./intro.txt
@@ -296,6 +319,7 @@ curl -X POST http://localhost:8080/api/documents/import-text \
 
 ```bash
 curl -X POST http://localhost:8080/api/documents/import-pdf \
+  -H 'Authorization: Bearer change-me' \
   -F knowledge_base_id=1 \
   -F title=rag-intro.pdf \
   -F file=@./rag-intro.pdf
@@ -304,6 +328,7 @@ curl -X POST http://localhost:8080/api/documents/import-pdf \
 说明：
 
 - PDF 导入会先抽取纯文本，再复用现有 `documents` 存储和后续 `/api/documents/:id/index` 的切分、向量化、Qdrant 入库流程
+- PDF HTTP 导入仅支持 multipart 上传，不再支持 `file_path` 这类服务端本地路径读取
 - 当前使用 `github.com/ledongthuc/pdf` 做文本提取
 - 不包含 OCR，扫描版 PDF 或以图片为主的 PDF 可能提取不到文本
 - 多栏、复杂排版、表格类 PDF 的文本顺序可能与视觉顺序不完全一致
@@ -311,13 +336,15 @@ curl -X POST http://localhost:8080/api/documents/import-pdf \
 触发切分与向量入库：
 
 ```bash
-curl -X POST http://localhost:8080/api/documents/1/index
+curl -X POST http://localhost:8080/api/documents/1/index \
+  -H 'Authorization: Bearer change-me'
 ```
 
 查询文档列表：
 
 ```bash
-curl 'http://localhost:8080/api/documents?knowledge_base_id=1'
+curl 'http://localhost:8080/api/documents?knowledge_base_id=1' \
+  -H 'Authorization: Bearer change-me'
 ```
 
 ## OpenAI 兼容接口

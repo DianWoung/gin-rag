@@ -9,7 +9,7 @@ import (
 	"github.com/dianwang-mac/go-rag/internal/observability"
 )
 
-func NewRouter(internalAPI *handler.InternalAPIHandler, openAI *handler.OpenAIHandler) *gin.Engine {
+func NewRouter(adminAPIKey string, internalAPI *handler.InternalAPIHandler, openAI *handler.OpenAIHandler) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery(), observability.Middleware())
 
@@ -18,6 +18,7 @@ func NewRouter(internalAPI *handler.InternalAPIHandler, openAI *handler.OpenAIHa
 	})
 
 	api := router.Group("/api")
+	api.Use(handler.AdminAuthMiddleware(adminAPIKey))
 	api.POST("/knowledge-bases", internalAPI.CreateKnowledgeBase)
 	api.GET("/knowledge-bases", internalAPI.ListKnowledgeBases)
 	api.DELETE("/knowledge-bases/:id", internalAPI.DeleteKnowledgeBase)

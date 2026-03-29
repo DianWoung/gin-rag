@@ -2,12 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
+	einoembedding "github.com/cloudwego/eino/components/embedding"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
@@ -21,13 +21,30 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+type documentVectorStore interface {
+	EnsureCollection(ctx context.Context, collectionName string, dimension int) error
+	UpsertChunks(ctx context.Context, collectionName string, chunks []store.ChunkVector) error
+	DeletePoints(ctx context.Context, collectionName string, pointIDs []string) error
+}
+
+type embeddingProvider interface {
+	NewEmbedder(ctx context.Context, modelName string) (einoembedding.Embedder, error)
+}
+
 type DocumentService struct {
 	db       *gorm.DB
 	splitter *ingest.Splitter
 	pdf      ingest.PDFTextExtractor
-	vectors  *store.QdrantStore
-	provider *llm.Provider
+	vectors  documentVectorStore
+	provider embeddingProvider
 }
+
+const (
+	documentStatusImported = "imported"
+	documentStatusIndexing = "indexing"
+	documentStatusIndexed  = "indexed"
+	documentStatusFailed   = "failed"
+)
 
 func NewDocumentService(db *gorm.DB, splitter *ingest.Splitter, vectors *store.QdrantStore, provider *llm.Provider) *DocumentService {
 	return &DocumentService{
@@ -121,9 +138,6 @@ func (s *DocumentService) ImportPDFDocument(ctx context.Context, req appdto.Impo
 	}
 
 	fileName := strings.TrimSpace(req.FileName)
-	if fileName == "" && strings.TrimSpace(req.FilePath) != "" {
-		fileName = filepath.Base(strings.TrimSpace(req.FilePath))
-	}
 
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
@@ -135,14 +149,6 @@ func (s *DocumentService) ImportPDFDocument(ctx context.Context, req appdto.Impo
 	}
 
 	content := req.Content
-	if len(content) == 0 && strings.TrimSpace(req.FilePath) != "" {
-		raw, err := os.ReadFile(strings.TrimSpace(req.FilePath))
-		if err != nil {
-			err = fmt.Errorf("read pdf file: %w", err)
-			return nil, err
-		}
-		content = raw
-	}
 	if len(content) == 0 {
 		err = apperr.New(http.StatusBadRequest, fmt.Errorf("pdf file content is required"))
 		return nil, err
@@ -163,6 +169,8 @@ func (s *DocumentService) ImportPDFDocument(ctx context.Context, req appdto.Impo
 }
 
 func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (doc *entity.Document, err error) {
+	var claimedForIndexing bool
+
 	ctx, span := observability.StartSpan(
 		ctx,
 		observability.SpanDocumentIndex,
@@ -172,6 +180,11 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (d
 	defer func() {
 		if doc != nil {
 			span.SetAttributes(attribute.Int(observability.AttrKnowledgeBaseID, int(doc.KnowledgeBaseID)))
+		}
+		if err != nil && claimedForIndexing {
+			if markErr := s.markDocumentFailed(ctx, documentID, err.Error()); markErr != nil {
+				err = errors.Join(err, fmt.Errorf("mark document failed: %w", markErr))
+			}
 		}
 		observability.RecordError(span, err)
 		span.End()
@@ -193,15 +206,25 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (d
 		observability.TextAttribute(observability.AttrSourceType, doc.SourceType),
 	)
 
-	var chunkCount int64
-	if err = s.db.WithContext(ctx).Model(&entity.DocumentChunk{}).Where("document_id = ?", doc.ID).Count(&chunkCount).Error; err != nil {
-		err = fmt.Errorf("count document chunks: %w", err)
-		return nil, err
-	}
-	if chunkCount > 0 {
+	switch doc.Status {
+	case documentStatusIndexed:
 		err = apperr.New(http.StatusBadRequest, fmt.Errorf("document already indexed"))
 		return nil, err
+	case documentStatusIndexing:
+		err = apperr.New(http.StatusConflict, fmt.Errorf("document is currently indexing"))
+		return nil, err
+	case documentStatusImported, documentStatusFailed:
+	default:
+		err = apperr.New(http.StatusBadRequest, fmt.Errorf("document is not indexable in status %q", doc.Status))
+		return nil, err
 	}
+
+	if err = s.claimDocumentForIndexing(ctx, doc.ID); err != nil {
+		return nil, err
+	}
+	claimedForIndexing = true
+	doc.Status = documentStatusIndexing
+	doc.ErrorMessage = ""
 
 	var kb entity.KnowledgeBase
 	if err = s.db.WithContext(ctx).First(&kb, doc.KnowledgeBaseID).Error; err != nil {
@@ -270,8 +293,10 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (d
 
 	dbChunks := make([]entity.DocumentChunk, 0, len(chunks))
 	vectorChunks := make([]store.ChunkVector, 0, len(chunks))
+	pointIDs := make([]string, 0, len(chunks))
 	for idx, content := range chunks {
 		pointID := uuid.NewString()
+		pointIDs = append(pointIDs, pointID)
 		dbChunks = append(dbChunks, entity.DocumentChunk{
 			KnowledgeBaseID: kb.ID,
 			DocumentID:      doc.ID,
@@ -289,23 +314,73 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (d
 		})
 	}
 
-	if err = s.db.WithContext(ctx).Create(&dbChunks).Error; err != nil {
-		err = fmt.Errorf("create document chunks: %w", err)
-		return nil, err
-	}
-
 	if err = s.vectors.UpsertChunks(ctx, kb.CollectionName, vectorChunks); err != nil {
+		err = fmt.Errorf("upsert qdrant points: %w", err)
 		return nil, err
 	}
 
-	doc.Status = "indexed"
-	doc.ErrorMessage = ""
-	if err = s.db.WithContext(ctx).Save(doc).Error; err != nil {
-		err = fmt.Errorf("update document status: %w", err)
+	if err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("document_id = ?", doc.ID).Delete(&entity.DocumentChunk{}).Error; err != nil {
+			return fmt.Errorf("delete stale document chunks: %w", err)
+		}
+		if err := tx.Create(&dbChunks).Error; err != nil {
+			return fmt.Errorf("create document chunks: %w", err)
+		}
+		if err := s.markDocumentIndexed(tx, doc.ID); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		cleanupErr := s.vectors.DeletePoints(ctx, kb.CollectionName, pointIDs)
+		if cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("delete qdrant points: %w", cleanupErr))
+		}
 		return nil, err
 	}
+
+	doc.Status = documentStatusIndexed
+	doc.ErrorMessage = ""
 
 	return doc, nil
+}
+
+func (s *DocumentService) claimDocumentForIndexing(ctx context.Context, documentID uint) error {
+	result := s.db.WithContext(ctx).
+		Model(&entity.Document{}).
+		Where("id = ? AND status IN ?", documentID, []string{documentStatusImported, documentStatusFailed}).
+		Updates(map[string]any{
+			"status":        documentStatusIndexing,
+			"error_message": "",
+		})
+	if result.Error != nil {
+		return fmt.Errorf("claim document for indexing: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return apperr.New(http.StatusConflict, fmt.Errorf("document is no longer indexable"))
+	}
+	return nil
+}
+
+func (s *DocumentService) markDocumentFailed(ctx context.Context, documentID uint, message string) error {
+	return s.db.WithContext(ctx).
+		Model(&entity.Document{}).
+		Where("id = ?", documentID).
+		Updates(map[string]any{
+			"status":        documentStatusFailed,
+			"error_message": message,
+		}).Error
+}
+
+func (s *DocumentService) markDocumentIndexed(tx *gorm.DB, documentID uint) error {
+	if err := tx.Model(&entity.Document{}).
+		Where("id = ?", documentID).
+		Updates(map[string]any{
+			"status":        documentStatusIndexed,
+			"error_message": "",
+		}).Error; err != nil {
+		return fmt.Errorf("update document status: %w", err)
+	}
+	return nil
 }
 
 func (s *DocumentService) DeleteDocument(ctx context.Context, documentID uint) (err error) {

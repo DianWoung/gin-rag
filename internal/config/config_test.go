@@ -8,6 +8,7 @@ import (
 func TestLoadFromEnvAppliesDefaults(t *testing.T) {
 	t.Setenv("APP_PORT", "")
 	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "test-admin-key")
 	t.Setenv("QDRANT_HOST", "")
 	t.Setenv("QDRANT_GRPC_PORT", "")
 	t.Setenv("OPENAI_API_KEY", "test-key")
@@ -48,6 +49,7 @@ func TestLoadFromEnvAppliesDefaults(t *testing.T) {
 func TestLoadFromEnvRequiresSecretsAndDSN(t *testing.T) {
 	for _, key := range []string{
 		"MYSQL_DSN",
+		"ADMIN_API_KEY",
 		"OPENAI_API_KEY",
 		"APP_PORT",
 		"QDRANT_HOST",
@@ -62,6 +64,7 @@ func TestLoadFromEnvRequiresSecretsAndDSN(t *testing.T) {
 		t.Setenv(key, "")
 	}
 	os.Unsetenv("MYSQL_DSN")
+	os.Unsetenv("ADMIN_API_KEY")
 	os.Unsetenv("OPENAI_API_KEY")
 
 	if _, err := Load(); err == nil {
@@ -71,6 +74,7 @@ func TestLoadFromEnvRequiresSecretsAndDSN(t *testing.T) {
 
 func TestLoadFromEnvUsesEmbeddingOverrides(t *testing.T) {
 	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "test-admin-key")
 	t.Setenv("OPENAI_API_KEY", "chat-key")
 	t.Setenv("OPENAI_BASE_URL", "https://chat.example.com/v1")
 	t.Setenv("OPENAI_CHAT_MODEL", "gpt-4.1-mini")
@@ -103,6 +107,7 @@ func TestLoadFromEnvUsesEmbeddingOverrides(t *testing.T) {
 
 func TestLoadFromEnvFallsBackToLegacyEmbeddingEnv(t *testing.T) {
 	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "test-admin-key")
 	t.Setenv("OPENAI_API_KEY", "chat-key")
 	t.Setenv("OPENAI_BASE_URL", "https://chat.example.com/v1")
 	t.Setenv("OPENAI_EMBEDDING_MODEL", "legacy-embedding")
@@ -128,6 +133,7 @@ func TestLoadFromEnvFallsBackToLegacyEmbeddingEnv(t *testing.T) {
 
 func TestLoadFromEnvStillRequiresOpenAIAPIKeyWhenEmbeddingConfigured(t *testing.T) {
 	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "test-admin-key")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 	t.Setenv("EMBEDDING_API_KEY", "-")
@@ -141,6 +147,7 @@ func TestLoadFromEnvStillRequiresOpenAIAPIKeyWhenEmbeddingConfigured(t *testing.
 
 func TestLoadIncludesPhoenixTracingConfig(t *testing.T) {
 	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "test-admin-key")
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("PHOENIX_OTLP_ENDPOINT", "http://127.0.0.1:6006")
 	t.Setenv("PHOENIX_PROJECT_NAME", "go-rag")
@@ -165,6 +172,7 @@ func TestLoadIncludesPhoenixTracingConfig(t *testing.T) {
 
 func TestLoadRejectsEnabledTracingWithoutEndpoint(t *testing.T) {
 	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "test-admin-key")
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("PHOENIX_TRACING_ENABLED", "true")
 	t.Setenv("PHOENIX_OTLP_ENDPOINT", "")
@@ -172,5 +180,29 @@ func TestLoadRejectsEnabledTracingWithoutEndpoint(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want invalid tracing config error")
+	}
+}
+
+func TestLoadRequiresAdminAPIKey(t *testing.T) {
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want ADMIN_API_KEY required error")
+	}
+}
+
+func TestLoadIncludesAdminAPIKey(t *testing.T) {
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "test-admin-key")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AdminAPIKey != "test-admin-key" {
+		t.Fatalf("AdminAPIKey = %q, want test-admin-key", cfg.AdminAPIKey)
 	}
 }

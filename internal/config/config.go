@@ -9,14 +9,15 @@ import (
 )
 
 type Config struct {
-	AppPort   string
-	MySQLDSN  string
-	Qdrant    QdrantConfig
-	Chat      ChatConfig
-	Embedding EmbeddingConfig
-	Chunking  ChunkingConfig
-	Reranker  RerankerConfig
-	Tracing   TracingConfig
+	AppPort     string
+	MySQLDSN    string
+	AdminAPIKey string
+	Qdrant      QdrantConfig
+	Chat        ChatConfig
+	Embedding   EmbeddingConfig
+	Chunking    ChunkingConfig
+	Reranker    RerankerConfig
+	Tracing     TracingConfig
 }
 
 type QdrantConfig struct {
@@ -59,14 +60,20 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MYSQL_DSN is required")
 	}
 
+	adminAPIKey := strings.TrimSpace(os.Getenv("ADMIN_API_KEY"))
+	if adminAPIKey == "" {
+		return nil, fmt.Errorf("ADMIN_API_KEY is required")
+	}
+
 	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY is required")
 	}
 
 	cfg := &Config{
-		AppPort:  readString("APP_PORT", "8080"),
-		MySQLDSN: mysqlDSN,
+		AppPort:     readString("APP_PORT", "8080"),
+		MySQLDSN:    mysqlDSN,
+		AdminAPIKey: adminAPIKey,
 		Qdrant: QdrantConfig{
 			Host:     readString("QDRANT_HOST", "127.0.0.1"),
 			GRPCPort: readInt("QDRANT_GRPC_PORT", 6334),

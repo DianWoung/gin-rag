@@ -30,11 +30,12 @@ func (f *fakeKnowledgeBaseService) DeleteKnowledgeBase(_ context.Context, _ uint
 }
 
 type fakeDocumentService struct {
-	result       *entity.Document
-	err          error
-	textReq      appdto.ImportTextDocumentRequest
-	pdfReq       appdto.ImportPDFDocumentRequest
-	indexedDocID uint
+	result         *entity.Document
+	err            error
+	textReq        appdto.ImportTextDocumentRequest
+	pdfReq         appdto.ImportPDFDocumentRequest
+	importPDFCalls int
+	indexedDocID   uint
 }
 
 func (f *fakeDocumentService) ImportTextDocument(_ context.Context, req appdto.ImportTextDocumentRequest) (*entity.Document, error) {
@@ -43,6 +44,7 @@ func (f *fakeDocumentService) ImportTextDocument(_ context.Context, req appdto.I
 }
 
 func (f *fakeDocumentService) ImportPDFDocument(_ context.Context, req appdto.ImportPDFDocumentRequest) (*entity.Document, error) {
+	f.importPDFCalls++
 	f.pdfReq = req
 	return f.result, f.err
 }
@@ -125,5 +127,30 @@ func TestImportPDFDocumentMultipart(t *testing.T) {
 	}
 	if payload.SourceType != "pdf" {
 		t.Fatalf("SourceType = %q, want pdf", payload.SourceType)
+	}
+}
+
+func TestImportPDFDocumentRejectsJSONFilePath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	service := &fakeDocumentService{
+		result: &entity.Document{ID: 7},
+	}
+	handler := NewInternalAPIHandler(&fakeKnowledgeBaseService{}, service)
+	router := gin.New()
+	router.POST("/api/documents/import-pdf", handler.ImportPDFDocument)
+
+	body := []byte(`{"knowledge_base_id":3,"title":"report.pdf","file_path":"/tmp/report.pdf"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/documents/import-pdf", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", resp.Code, http.StatusBadRequest, resp.Body.String())
+	}
+	if service.importPDFCalls != 0 {
+		t.Fatalf("ImportPDFDocument() calls = %d, want 0", service.importPDFCalls)
 	}
 }
