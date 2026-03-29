@@ -25,6 +25,10 @@ func (f *fakeKnowledgeBaseService) ListKnowledgeBases(_ context.Context) ([]enti
 	return nil, nil
 }
 
+func (f *fakeKnowledgeBaseService) DeleteKnowledgeBase(_ context.Context, _ uint) error {
+	return nil
+}
+
 type fakeDocumentService struct {
 	result       *entity.Document
 	err          error
@@ -50,6 +54,10 @@ func (f *fakeDocumentService) IndexDocument(_ context.Context, documentID uint) 
 
 func (f *fakeDocumentService) ListDocuments(_ context.Context, _ uint) ([]entity.Document, error) {
 	return nil, nil
+}
+
+func (f *fakeDocumentService) DeleteDocument(_ context.Context, _ uint) error {
+	return nil
 }
 
 func TestImportPDFDocumentMultipart(t *testing.T) {

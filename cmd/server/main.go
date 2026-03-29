@@ -54,7 +54,7 @@ func main() {
 		log.Printf("reranker enabled: %s", cfg.Reranker.BaseURL)
 	}
 
-	kbService := service.NewKnowledgeBaseService(db, cfg.Embedding.Model)
+	kbService := service.NewKnowledgeBaseService(db, vectorStore, cfg.Embedding.Model)
 	documentService := service.NewDocumentService(db, splitter, vectorStore, provider)
 	chatService := service.NewChatService(db, vectorStore, provider, reranker)
 

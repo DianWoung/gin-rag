@@ -16,6 +16,7 @@ import (
 type KnowledgeBaseService interface {
 	CreateKnowledgeBase(ctx context.Context, req appdto.CreateKnowledgeBaseRequest) (*entity.KnowledgeBase, error)
 	ListKnowledgeBases(ctx context.Context) ([]entity.KnowledgeBase, error)
+	DeleteKnowledgeBase(ctx context.Context, id uint) error
 }
 
 type DocumentService interface {
@@ -23,6 +24,7 @@ type DocumentService interface {
 	ImportPDFDocument(ctx context.Context, req appdto.ImportPDFDocumentRequest) (*entity.Document, error)
 	IndexDocument(ctx context.Context, documentID uint) (*entity.Document, error)
 	ListDocuments(ctx context.Context, knowledgeBaseID uint) ([]entity.Document, error)
+	DeleteDocument(ctx context.Context, documentID uint) error
 }
 
 type InternalAPIHandler struct {
@@ -129,6 +131,36 @@ func (h *InternalAPIHandler) ListDocuments(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+
+func (h *InternalAPIHandler) DeleteKnowledgeBase(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, badRequest("invalid knowledge base id"))
+		return
+	}
+
+	if err := h.knowledgeBases.DeleteKnowledgeBase(c.Request.Context(), uint(id)); err != nil {
+		writeError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+func (h *InternalAPIHandler) DeleteDocument(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, badRequest("invalid document id"))
+		return
+	}
+
+	if err := h.documents.DeleteDocument(c.Request.Context(), uint(id)); err != nil {
+		writeError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 
 func parseImportTextRequest(c *gin.Context) (appdto.ImportTextDocumentRequest, error) {

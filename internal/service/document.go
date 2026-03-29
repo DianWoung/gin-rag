@@ -208,6 +208,51 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (*
 	return &doc, nil
 }
 
+func (s *DocumentService) DeleteDocument(ctx context.Context, documentID uint) error {
+	var doc entity.Document
+	if err := s.db.WithContext(ctx).First(&doc, documentID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return apperr.New(http.StatusNotFound, fmt.Errorf("document not found"))
+		}
+		return fmt.Errorf("find document: %w", err)
+	}
+
+	var kb entity.KnowledgeBase
+	if err := s.db.WithContext(ctx).First(&kb, doc.KnowledgeBaseID).Error; err != nil {
+		return fmt.Errorf("find knowledge base: %w", err)
+	}
+
+	// Collect Qdrant point IDs before deleting from MySQL.
+	var chunks []entity.DocumentChunk
+	if err := s.db.WithContext(ctx).Where("document_id = ?", doc.ID).Find(&chunks).Error; err != nil {
+		return fmt.Errorf("find document chunks: %w", err)
+	}
+
+	pointIDs := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		if c.VectorPointID != "" {
+			pointIDs = append(pointIDs, c.VectorPointID)
+		}
+	}
+
+	// Delete vectors from Qdrant first (external resource, harder to undo).
+	if len(pointIDs) > 0 {
+		if err := s.vectors.DeletePoints(ctx, kb.CollectionName, pointIDs); err != nil {
+			return fmt.Errorf("delete vectors: %w", err)
+		}
+	}
+
+	// Delete chunks and document from MySQL.
+	if err := s.db.WithContext(ctx).Where("document_id = ?", doc.ID).Delete(&entity.DocumentChunk{}).Error; err != nil {
+		return fmt.Errorf("delete document chunks: %w", err)
+	}
+	if err := s.db.WithContext(ctx).Delete(&doc).Error; err != nil {
+		return fmt.Errorf("delete document: %w", err)
+	}
+
+	return nil
+}
+
 func (s *DocumentService) ListDocuments(ctx context.Context, knowledgeBaseID uint) ([]entity.Document, error) {
 	query := s.db.WithContext(ctx).Model(&entity.Document{}).Order("id desc")
 	if knowledgeBaseID > 0 {

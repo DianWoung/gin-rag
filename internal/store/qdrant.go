@@ -135,6 +135,38 @@ func (s *QdrantStore) Search(ctx context.Context, collectionName string, vector 
 	return results, nil
 }
 
+func (s *QdrantStore) DeletePoints(ctx context.Context, collectionName string, pointIDs []string) error {
+	if len(pointIDs) == 0 {
+		return nil
+	}
+
+	ids := make([]*qdrant.PointId, 0, len(pointIDs))
+	for _, id := range pointIDs {
+		ids = append(ids, qdrant.NewIDUUID(id))
+	}
+
+	_, err := s.client.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: collectionName,
+		Points: &qdrant.PointsSelector{
+			PointsSelectorOneOf: &qdrant.PointsSelector_Points{
+				Points: &qdrant.PointsIdsList{Ids: ids},
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("delete qdrant points: %w", err)
+	}
+	return nil
+}
+
+func (s *QdrantStore) DeleteCollection(ctx context.Context, collectionName string) error {
+	err := s.client.DeleteCollection(ctx, collectionName)
+	if err != nil {
+		return fmt.Errorf("delete qdrant collection: %w", err)
+	}
+	return nil
+}
+
 func toFloat32s(values []float64) []float32 {
 	result := make([]float32, 0, len(values))
 	for _, value := range values {

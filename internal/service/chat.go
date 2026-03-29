@@ -175,12 +175,18 @@ func (s *ChatService) findKnowledgeBase(ctx context.Context, req appdto.ChatRequ
 	return &kb, nil
 }
 
-func buildPromptMessages(question string, history []*schema.Message, matches []store.SearchResult) []*schema.Message {
+type sourceMatch struct {
+	Index    int
+	DocTitle string
+	Content  string
+}
+
+func buildPromptMessages(question string, history []*schema.Message, sources []sourceMatch) []*schema.Message {
 	contextBlock := "No retrieved context."
-	if len(matches) > 0 {
-		parts := make([]string, 0, len(matches))
-		for _, match := range matches {
-			parts = append(parts, fmt.Sprintf("[%d] %s", match.ChunkIndex, match.Content))
+	if len(sources) > 0 {
+		parts := make([]string, 0, len(sources))
+		for _, src := range sources {
+			parts = append(parts, fmt.Sprintf("[%d] (Source: %q)\n%s", src.Index+1, src.DocTitle, src.Content))
 		}
 		contextBlock = strings.Join(parts, "\n\n")
 	}
@@ -188,7 +194,8 @@ func buildPromptMessages(question string, history []*schema.Message, matches []s
 	messages := make([]*schema.Message, 0, len(history)+2)
 	messages = append(messages, &schema.Message{
 		Role: schema.System,
-		Content: "You are a grounded RAG assistant. Use the retrieved context when relevant. " +
+		Content: "You are a grounded RAG assistant. Answer the user's question based on the retrieved context below. " +
+			"Cite sources using [N] notation (e.g. [1], [2]) when your answer draws from a specific passage. " +
 			"If the answer is not supported by context, say so clearly.\n\nRetrieved context:\n" + contextBlock,
 	})
 	messages = append(messages, history...)
@@ -364,7 +371,9 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 
 		logRetrieval(in.Question, retrievalQuery, matches, reranked)
 
-		return buildPromptMessages(in.Question, in.History, matches), nil
+		sources := s.buildSources(ctx, matches)
+
+		return buildPromptMessages(in.Question, in.History, sources), nil
 	}))
 	chain.AppendChatModel(chatModel)
 
@@ -374,6 +383,49 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 	}
 
 	return runner, nil
+}
+
+// buildSources looks up document titles for the search results and returns
+// sourceMatch slices suitable for prompt construction with citations.
+func (s *ChatService) buildSources(ctx context.Context, matches []store.SearchResult) []sourceMatch {
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// Collect unique document IDs.
+	docIDSet := make(map[uint]struct{})
+	for _, m := range matches {
+		docIDSet[m.DocumentID] = struct{}{}
+	}
+	docIDs := make([]uint, 0, len(docIDSet))
+	for id := range docIDSet {
+		docIDs = append(docIDs, id)
+	}
+
+	// Batch-fetch titles from MySQL.
+	titleMap := make(map[uint]string)
+	var docs []entity.Document
+	if err := s.db.WithContext(ctx).Select("id, title").Where("id IN ?", docIDs).Find(&docs).Error; err != nil {
+		log.Printf("failed to fetch document titles: %v", err)
+	} else {
+		for _, d := range docs {
+			titleMap[d.ID] = d.Title
+		}
+	}
+
+	sources := make([]sourceMatch, len(matches))
+	for i, m := range matches {
+		title := titleMap[m.DocumentID]
+		if title == "" {
+			title = fmt.Sprintf("doc_%d", m.DocumentID)
+		}
+		sources[i] = sourceMatch{
+			Index:    i,
+			DocTitle: title,
+			Content:  m.Content,
+		}
+	}
+	return sources
 }
 
 // logRetrieval emits a structured log entry with retrieval metrics for offline

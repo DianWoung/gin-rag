@@ -19,9 +19,11 @@ func NewRouter(internalAPI *handler.InternalAPIHandler, openAI *handler.OpenAIHa
 	api := router.Group("/api")
 	api.POST("/knowledge-bases", internalAPI.CreateKnowledgeBase)
 	api.GET("/knowledge-bases", internalAPI.ListKnowledgeBases)
+	api.DELETE("/knowledge-bases/:id", internalAPI.DeleteKnowledgeBase)
 	api.POST("/documents/import-text", internalAPI.ImportTextDocument)
 	api.POST("/documents/import-pdf", internalAPI.ImportPDFDocument)
 	api.POST("/documents/:id/index", internalAPI.IndexDocument)
+	api.DELETE("/documents/:id", internalAPI.DeleteDocument)
 	api.GET("/documents", internalAPI.ListDocuments)
 
 	router.POST("/v1/chat/completions", openAI.ChatCompletions)
