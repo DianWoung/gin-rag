@@ -21,6 +21,16 @@ RAG 主链路：
 4. 聊天请求进入 `POST /v1/chat/completions`。
 5. 服务按知识库检索 Qdrant 相似 chunk，用 Eino `Chain` 组织检索后的提示构造与生成；`stream=true` 时通过 SSE 按 chunk 向外刷出。
 
+## 评测与观测
+
+RAG 系统的质量保障采用三层闭环：
+
+- `RAGAS` 用于离线评测，衡量检索命中、上下文相关性与回答质量
+- `DeepEval` 用于 CI 门禁，将核心评测指标转成可执行的 fail/pass gate
+- `Phoenix` 用于生产环境 tracing 与 observability，在真实流量下持续追踪链路表现，并在异常时下钻到 `span` 级别定位问题
+
+这三层分别覆盖“离线打分、上线前拦截、上线后追踪”，避免质量问题只在线上暴露。
+
 ## MySQL 元数据表
 
 - `knowledge_bases`
