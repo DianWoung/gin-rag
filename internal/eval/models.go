@@ -10,46 +10,47 @@ import (
 )
 
 type SampleRecord struct {
-	SampleID           string    `gorm:"primaryKey;size:36"`
-	TraceID            string    `gorm:"uniqueIndex;size:128;not null"`
-	ProjectName        string    `gorm:"size:128;not null"`
-	RootSpanName       string    `gorm:"size:128;not null"`
-	Question           string    `gorm:"type:longtext;not null"`
-	Answer             string    `gorm:"type:longtext"`
-	Prompt             string    `gorm:"type:longtext;not null"`
-	Model              string    `gorm:"size:128"`
-	Temperature        float32   `gorm:"not null;default:0"`
-	KnowledgeBaseID    uint      `gorm:"not null;default:0"`
-	KnowledgeBaseName  string    `gorm:"size:128"`
-	CollectionName     string    `gorm:"size:128"`
-	EmbeddingModel     string    `gorm:"size:128"`
-	ChunksJSON         string    `gorm:"type:longtext;not null"`
-	WarningsJSON       string    `gorm:"type:longtext;not null"`
+	SampleID           string  `gorm:"primaryKey;size:36"`
+	TraceID            string  `gorm:"uniqueIndex;size:128;not null"`
+	ProjectName        string  `gorm:"size:128;not null"`
+	RootSpanName       string  `gorm:"size:128;not null"`
+	Question           string  `gorm:"type:longtext;not null"`
+	Answer             string  `gorm:"type:longtext"`
+	Prompt             string  `gorm:"type:longtext;not null"`
+	PromptMessagesJSON string  `gorm:"type:longtext"`
+	Model              string  `gorm:"size:128"`
+	Temperature        float32 `gorm:"not null;default:0"`
+	KnowledgeBaseID    uint    `gorm:"not null;default:0"`
+	KnowledgeBaseName  string  `gorm:"size:128"`
+	CollectionName     string  `gorm:"size:128"`
+	EmbeddingModel     string  `gorm:"size:128"`
+	ChunksJSON         string  `gorm:"type:longtext;not null"`
+	WarningsJSON       string  `gorm:"type:longtext;not null"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
 
 type ReplayRunRecord struct {
-	ReplayRunID   string    `gorm:"primaryKey;size:36"`
-	SampleID      string    `gorm:"index;size:36;not null"`
-	Model         string    `gorm:"size:128;not null"`
-	Temperature   float32   `gorm:"not null;default:0"`
-	Prompt        string    `gorm:"type:longtext;not null"`
-	Answer        string    `gorm:"type:longtext"`
-	Status        string    `gorm:"size:32;not null"`
-	ErrorMessage  string    `gorm:"type:text"`
-	CreatedAt     time.Time
+	ReplayRunID  string  `gorm:"primaryKey;size:36"`
+	SampleID     string  `gorm:"index;size:36;not null"`
+	Model        string  `gorm:"size:128;not null"`
+	Temperature  float32 `gorm:"not null;default:0"`
+	Prompt       string  `gorm:"type:longtext;not null"`
+	Answer       string  `gorm:"type:longtext"`
+	Status       string  `gorm:"size:32;not null"`
+	ErrorMessage string  `gorm:"type:text"`
+	CreatedAt    time.Time
 }
 
 type EvaluationResultRecord struct {
-	EvaluationResultID string    `gorm:"primaryKey;size:36"`
-	SampleID           string    `gorm:"index;size:36;not null"`
-	ReplayRunID        string    `gorm:"index;size:36"`
-	Target             string    `gorm:"size:32;not null"`
-	Metric             string    `gorm:"size:64;not null"`
-	Status             string    `gorm:"size:32;not null"`
-	Score              float64   `gorm:"not null;default:0"`
-	Summary            string    `gorm:"type:text"`
+	EvaluationResultID string  `gorm:"primaryKey;size:36"`
+	SampleID           string  `gorm:"index;size:36;not null"`
+	ReplayRunID        string  `gorm:"index;size:36"`
+	Target             string  `gorm:"size:32;not null"`
+	Metric             string  `gorm:"size:64;not null"`
+	Status             string  `gorm:"size:32;not null"`
+	Score              float64 `gorm:"not null;default:0"`
+	Summary            string  `gorm:"type:text"`
 	CreatedAt          time.Time
 }
 
@@ -85,6 +86,10 @@ type EvaluationResult struct {
 }
 
 func NewSampleRecord(sample tracebridge.ChatSample, warnings []tracebridge.ExportWarning) (SampleRecord, error) {
+	promptMessagesJSON, err := json.Marshal(sample.PromptMessages)
+	if err != nil {
+		return SampleRecord{}, err
+	}
 	chunksJSON, err := json.Marshal(sample.Chunks)
 	if err != nil {
 		return SampleRecord{}, err
@@ -95,21 +100,22 @@ func NewSampleRecord(sample tracebridge.ChatSample, warnings []tracebridge.Expor
 	}
 
 	return SampleRecord{
-		SampleID:          uuid.NewString(),
-		TraceID:           sample.TraceID,
-		ProjectName:       sample.ProjectName,
-		RootSpanName:      sample.RootSpanName,
-		Question:          sample.Question,
-		Answer:            sample.Answer,
-		Prompt:            sample.Prompt,
-		Model:             sample.Model,
-		Temperature:       sample.Temperature,
-		KnowledgeBaseID:   sample.KnowledgeBaseID,
-		KnowledgeBaseName: sample.KnowledgeBaseName,
-		CollectionName:    sample.CollectionName,
-		EmbeddingModel:    sample.EmbeddingModel,
-		ChunksJSON:        string(chunksJSON),
-		WarningsJSON:      string(warningsJSON),
+		SampleID:           uuid.NewString(),
+		TraceID:            sample.TraceID,
+		ProjectName:        sample.ProjectName,
+		RootSpanName:       sample.RootSpanName,
+		Question:           sample.Question,
+		Answer:             sample.Answer,
+		Prompt:             sample.Prompt,
+		PromptMessagesJSON: string(promptMessagesJSON),
+		Model:              sample.Model,
+		Temperature:        sample.Temperature,
+		KnowledgeBaseID:    sample.KnowledgeBaseID,
+		KnowledgeBaseName:  sample.KnowledgeBaseName,
+		CollectionName:     sample.CollectionName,
+		EmbeddingModel:     sample.EmbeddingModel,
+		ChunksJSON:         string(chunksJSON),
+		WarningsJSON:       string(warningsJSON),
 	}, nil
 }
 
@@ -122,6 +128,7 @@ func (r SampleRecord) ToStoredSample() (StoredSample, error) {
 		Question:          r.Question,
 		Answer:            r.Answer,
 		Prompt:            r.Prompt,
+		PromptMessages:    nil,
 		Model:             r.Model,
 		Temperature:       r.Temperature,
 		KnowledgeBaseID:   r.KnowledgeBaseID,
@@ -131,6 +138,11 @@ func (r SampleRecord) ToStoredSample() (StoredSample, error) {
 	}
 	if err := json.Unmarshal([]byte(r.ChunksJSON), &sample.Chunks); err != nil {
 		return StoredSample{}, err
+	}
+	if r.PromptMessagesJSON != "" {
+		if err := json.Unmarshal([]byte(r.PromptMessagesJSON), &sample.PromptMessages); err != nil {
+			return StoredSample{}, err
+		}
 	}
 
 	var warnings []tracebridge.ExportWarning
