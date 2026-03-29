@@ -31,7 +31,10 @@ func TestGroundedAnswerScoresCapturedAndReplayTargetsSeparately(t *testing.T) {
 	stored := StoredSample{
 		SampleID: "sample-1",
 		Sample: tracebridge.ChatSample{
-			Answer: "rag retrieval generation",
+			Question:       "what is rag retrieval generation",
+			OriginalQuery:  "what is rag retrieval generation",
+			RewrittenQuery: "what is rag retrieval generation",
+			Answer:         "rag retrieval generation",
 			Chunks: []tracebridge.RetrievedChunk{
 				{Index: 0, Content: "rag retrieval generation"},
 			},
@@ -60,6 +63,55 @@ func TestGroundedAnswerScoresCapturedAndReplayTargetsSeparately(t *testing.T) {
 	if captured != 1 || replayed != 1 {
 		t.Fatalf("captured=%d replayed=%d, want 1 and 1", captured, replayed)
 	}
+}
+
+func TestRewriteFidelityUsesOriginalAndRewrittenQueries(t *testing.T) {
+	stored := StoredSample{
+		SampleID: "sample-2",
+		Sample: tracebridge.ChatSample{
+			Question:       "what is rag",
+			OriginalQuery:  "what is rag",
+			RewrittenQuery: "what is retrieval augmented generation",
+		},
+	}
+
+	results := ScoreChatSample(stored, nil)
+	for _, result := range results {
+		if result.Metric != "rewrite_fidelity" {
+			continue
+		}
+		if result.Status != StatusScored {
+			t.Fatalf("Status = %q, want scored", result.Status)
+		}
+		if result.Score <= 0 || result.Score >= 1 {
+			t.Fatalf("Score = %.2f, want between 0 and 1", result.Score)
+		}
+		return
+	}
+	t.Fatal("rewrite_fidelity result not found")
+}
+
+func TestRetrievalPrecisionAtKSkipsWithoutChunks(t *testing.T) {
+	stored := StoredSample{
+		SampleID: "sample-3",
+		Sample: tracebridge.ChatSample{
+			Question:       "what is rag",
+			OriginalQuery:  "what is rag",
+			RewrittenQuery: "what is rag",
+		},
+	}
+
+	results := ScoreChatSample(stored, nil)
+	for _, result := range results {
+		if result.Metric != "retrieval_precision_at_k" {
+			continue
+		}
+		if result.Status != StatusSkipped {
+			t.Fatalf("Status = %q, want skipped", result.Status)
+		}
+		return
+	}
+	t.Fatal("retrieval_precision_at_k result not found")
 }
 
 func TestSummarizeResultsAggregatesByTarget(t *testing.T) {

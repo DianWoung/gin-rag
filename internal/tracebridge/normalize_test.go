@@ -31,7 +31,7 @@ func TestNormalizeChatTraceExportsPromptMessages(t *testing.T) {
 			{
 				Name: observability.SpanChatRAGPrompt,
 				Attributes: map[string]any{
-					observability.AttrPrompt: "system: use context\n\nuser: 什么是 RAG",
+					observability.AttrPrompt:   "system: use context\n\nuser: 什么是 RAG",
 					"rag.prompt_messages_json": `[{"role":"system","content":"use context"},{"role":"user","content":"什么是 RAG"}]`,
 				},
 				StartTime: now,
@@ -86,6 +86,8 @@ func TestNormalizeChatTraceBuildsPromptAndChunks(t *testing.T) {
 				Name: observability.SpanChatRAGPrompt,
 				Attributes: map[string]any{
 					observability.AttrPrompt:          "system: use context\n\nuser: 什么是 RAG",
+					observability.AttrOriginalQuery:   "什么是 RAG",
+					observability.AttrRewrittenQuery:  "RAG 的定义是什么",
 					observability.AttrRetrievedChunks: "chunk-a\n---\nchunk-b",
 				},
 				StartTime: now,
@@ -109,6 +111,12 @@ func TestNormalizeChatTraceBuildsPromptAndChunks(t *testing.T) {
 	}
 	if sample.Model != "gpt-4o-mini" {
 		t.Fatalf("Model = %q", sample.Model)
+	}
+	if sample.OriginalQuery != "什么是 RAG" {
+		t.Fatalf("OriginalQuery = %q", sample.OriginalQuery)
+	}
+	if sample.RewrittenQuery != "RAG 的定义是什么" {
+		t.Fatalf("RewrittenQuery = %q", sample.RewrittenQuery)
 	}
 	if len(sample.Chunks) != 2 {
 		t.Fatalf("chunk count = %d, want 2", len(sample.Chunks))

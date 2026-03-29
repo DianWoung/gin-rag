@@ -77,6 +77,8 @@ func NormalizeChatTrace(trace phoenix.TraceEnvelope) (ChatSample, []ExportWarnin
 		ProjectName:       trace.ProjectName,
 		RootSpanName:      root.Name,
 		Question:          question,
+		OriginalQuery:     stringAttr(promptSpan.Attributes, observability.AttrOriginalQuery),
+		RewrittenQuery:    stringAttr(promptSpan.Attributes, observability.AttrRewrittenQuery),
 		Answer:            answer,
 		Prompt:            prompt,
 		PromptMessages:    promptMessages,
@@ -87,6 +89,12 @@ func NormalizeChatTrace(trace phoenix.TraceEnvelope) (ChatSample, []ExportWarnin
 		CollectionName:    stringAttr(chatSpan.Attributes, observability.AttrCollectionName),
 		EmbeddingModel:    stringAttr(chatSpan.Attributes, observability.AttrEmbeddingModel),
 		Chunks:            chunks,
+	}
+	if sample.OriginalQuery == "" {
+		sample.OriginalQuery = question
+	}
+	if sample.RewrittenQuery == "" {
+		sample.RewrittenQuery = sample.OriginalQuery
 	}
 
 	return sample, warnings, nil

@@ -138,6 +138,8 @@ go run ./cmd/evalctl score-sample <sample_id>
 
 当前内置的 `score` 是最小可运行实现，使用启发式规则计算：
 
+- `rewrite_fidelity`
+- `retrieval_precision_at_k`
 - `retrieval_relevance`
 - `grounded_answer`
 - `citation_correctness`

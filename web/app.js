@@ -16,6 +16,7 @@ const ui = {
   docId: $("docId"),
   traceId: $("traceId"),
   evalCmd: $("evalCmd"),
+  qualityOutput: $("qualityOutput"),
   jsonOutput: $("jsonOutput"),
   streamOutput: $("streamOutput"),
   traceOutput: $("traceOutput"),
@@ -116,6 +117,160 @@ function requireTrace() {
 function buildEvalCommand() {
   const traceId = state.traceId || "<TRACE_ID>";
   return `MYSQL_DSN='${ui.mysqlDsn.value}' PHOENIX_BASE_URL='${phoenixBase()}' PHOENIX_PROJECT_NAME='${ui.phoenixProject.value.trim() || "go-rag"}' OPENAI_API_KEY='<OPENAI_API_KEY>' OPENAI_BASE_URL='<OPENAI_BASE_URL>' OPENAI_CHAT_MODEL='${ui.chatModel.value.trim() || "deepseek-chat"}' go run ./cmd/evalctl run-trace ${traceId}`;
+}
+
+function tokenSet(text) {
+  const normalized = String(text || "")
+    .toLowerCase()
+    .replace(/[,.。，\n\t]/g, " ");
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  return new Set(parts);
+}
+
+function overlapScore(left, right) {
+  const leftTokens = tokenSet(left);
+  if (leftTokens.size === 0) {
+    return 0;
+  }
+  const rightTokens = tokenSet(right);
+  let matched = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      matched += 1;
+    }
+  }
+  return matched / leftTokens.size;
+}
+
+function symmetricTokenOverlapScore(left, right) {
+  const leftTokens = tokenSet(left);
+  const rightTokens = tokenSet(right);
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return 0;
+  }
+  let matched = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      matched += 1;
+    }
+  }
+  return (2 * matched) / (leftTokens.size + rightTokens.size);
+}
+
+function asString(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "";
+}
+
+function parseRetrievedChunks(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map((item) => asString(item).trim()).filter(Boolean);
+  }
+  const text = asString(raw).trim();
+  if (!text) {
+    return [];
+  }
+  if (text.startsWith("[") && text.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => asString(item).trim()).filter(Boolean);
+      }
+    } catch {
+      // ignore and continue with plain split
+    }
+  }
+  if (text.includes("\n---\n")) {
+    return text
+      .split("\n---\n")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [text];
+}
+
+function scoreQueryQuality(promptSpan, completionSpan) {
+  const attrs = promptSpan?.attributes || {};
+  const question = asString(completionSpan?.attributes?.["rag.question"]).trim();
+  const originalQuery = asString(attrs["rag.query.original"]).trim() || question;
+  const rewrittenQuery =
+    asString(attrs["rag.query.rewritten"]).trim() || originalQuery;
+  const chunks = parseRetrievedChunks(attrs["rag.retrieved_chunks"]);
+
+  const metrics = [];
+  if (!originalQuery || !rewrittenQuery) {
+    metrics.push({
+      metric: "rewrite_fidelity",
+      status: "skipped",
+      score: 0,
+      summary: "original or rewritten query is empty",
+    });
+  } else {
+    const score = symmetricTokenOverlapScore(originalQuery, rewrittenQuery);
+    metrics.push({
+      metric: "rewrite_fidelity",
+      status: "scored",
+      score,
+      summary: `query token overlap ${score.toFixed(2)}`,
+    });
+  }
+
+  if (chunks.length === 0) {
+    metrics.push({
+      metric: "retrieval_precision_at_k",
+      status: "skipped",
+      score: 0,
+      summary: "no retrieved chunks captured",
+    });
+  } else if (!rewrittenQuery) {
+    metrics.push({
+      metric: "retrieval_precision_at_k",
+      status: "skipped",
+      score: 0,
+      summary: "query is empty",
+    });
+  } else {
+    const k = Math.min(4, chunks.length);
+    let relevant = 0;
+    for (let i = 0; i < k; i += 1) {
+      if (overlapScore(rewrittenQuery, chunks[i]) >= 0.1) {
+        relevant += 1;
+      }
+    }
+    const score = relevant / k;
+    metrics.push({
+      metric: "retrieval_precision_at_k",
+      status: "scored",
+      score,
+      summary: `${relevant}/${k} chunks above overlap 0.10`,
+    });
+  }
+
+  const scored = metrics.filter((item) => item.status === "scored");
+  const average =
+    scored.length === 0
+      ? 0
+      : scored.reduce((sum, item) => sum + item.score, 0) / scored.length;
+
+  return {
+    original_query: originalQuery,
+    rewritten_query: rewrittenQuery,
+    chunk_count: chunks.length,
+    average_score: average,
+    metrics,
+  };
+}
+
+function renderQueryQuality(quality) {
+  write(ui.qualityOutput, quality);
 }
 
 async function createKb() {
@@ -268,8 +423,18 @@ async function chat(stream) {
 
 async function getLatestTrace() {
   const project = ui.phoenixProject.value.trim() || "go-rag";
+  const params = new URLSearchParams({
+    project,
+    limit: "300",
+    phoenix_base: phoenixBase(),
+  });
   const body = await requestJSON(
-    `${phoenixBase()}/v1/projects/${encodeURIComponent(project)}/spans?limit=300`
+    `${apiBase()}/api/debug/phoenix/spans?${params.toString()}`,
+    {
+      headers: {
+        ...adminHeaders(),
+      },
+    }
   );
   const chatRoots = (body.data || [])
     .filter((span) => span.name === "http.v1.chat_completions")
@@ -294,8 +459,18 @@ async function getLatestTrace() {
 async function loadTraceDetail() {
   requireTrace();
   const project = ui.phoenixProject.value.trim() || "go-rag";
+  const params = new URLSearchParams({
+    project,
+    limit: "1000",
+    phoenix_base: phoenixBase(),
+  });
   const body = await requestJSON(
-    `${phoenixBase()}/v1/projects/${encodeURIComponent(project)}/spans?limit=1000`
+    `${apiBase()}/api/debug/phoenix/spans?${params.toString()}`,
+    {
+      headers: {
+        ...adminHeaders(),
+      },
+    }
   );
   const spans = (body.data || []).filter(
     (span) => span?.context?.trace_id === state.traceId
@@ -308,6 +483,7 @@ async function loadTraceDetail() {
   const completionSpan =
     spans.find((span) => span.name === "service.chat.completion") ||
     spans.find((span) => span.name === "service.chat.completion_stream");
+  const queryQuality = scoreQueryQuality(promptSpan, completionSpan);
 
   const details = {
     trace_id: state.traceId,
@@ -318,8 +494,10 @@ async function loadTraceDetail() {
     prompt: promptSpan?.attributes?.["rag.prompt"],
     prompt_messages_json: promptSpan?.attributes?.["rag.prompt_messages_json"],
     retrieved_chunks: promptSpan?.attributes?.["rag.retrieved_chunks"],
+    query_quality: queryQuality,
     spans,
   };
+  renderQueryQuality(queryQuality);
   write(ui.traceOutput, details);
   setTab("trace");
   log(`Loaded trace detail for ${state.traceId}`);
@@ -340,6 +518,7 @@ function initDefaults() {
   const host = window.location.hostname || "127.0.0.1";
   ui.apiBase.value = `${window.location.protocol}//${window.location.host}`;
   ui.phoenixBase.value = `${window.location.protocol}//${host}:6006`;
+  renderQueryQuality({ message: "Load trace detail first." });
   syncIds();
   write(ui.logOutput, "");
   log("Console ready");

@@ -15,6 +15,8 @@ type SampleRecord struct {
 	ProjectName        string  `gorm:"size:128;not null"`
 	RootSpanName       string  `gorm:"size:128;not null"`
 	Question           string  `gorm:"type:longtext;not null"`
+	OriginalQuery      string  `gorm:"type:longtext"`
+	RewrittenQuery     string  `gorm:"type:longtext"`
 	Answer             string  `gorm:"type:longtext"`
 	Prompt             string  `gorm:"type:longtext;not null"`
 	PromptMessagesJSON string  `gorm:"type:longtext"`
@@ -105,6 +107,8 @@ func NewSampleRecord(sample tracebridge.ChatSample, warnings []tracebridge.Expor
 		ProjectName:        sample.ProjectName,
 		RootSpanName:       sample.RootSpanName,
 		Question:           sample.Question,
+		OriginalQuery:      sample.OriginalQuery,
+		RewrittenQuery:     sample.RewrittenQuery,
 		Answer:             sample.Answer,
 		Prompt:             sample.Prompt,
 		PromptMessagesJSON: string(promptMessagesJSON),
@@ -126,6 +130,8 @@ func (r SampleRecord) ToStoredSample() (StoredSample, error) {
 		ProjectName:       r.ProjectName,
 		RootSpanName:      r.RootSpanName,
 		Question:          r.Question,
+		OriginalQuery:     r.OriginalQuery,
+		RewrittenQuery:    r.RewrittenQuery,
 		Answer:            r.Answer,
 		Prompt:            r.Prompt,
 		PromptMessages:    nil,

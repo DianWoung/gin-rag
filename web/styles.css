@@ -261,6 +261,22 @@ hr {
   display: block;
 }
 
+.mini-output {
+  margin: 0;
+  min-height: 128px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0d0e17;
+  padding: 10px;
+  color: #cff4e7;
+  font-size: 0.8rem;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @keyframes rise {
   from {
     opacity: 0;

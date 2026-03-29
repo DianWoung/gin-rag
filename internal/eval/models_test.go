@@ -8,11 +8,13 @@ import (
 
 func TestSampleRecordRoundTripsPromptMessages(t *testing.T) {
 	record, err := NewSampleRecord(tracebridge.ChatSample{
-		TraceID:      "trace-123",
-		ProjectName:  "go-rag",
-		RootSpanName: "http.v1.chat_completions",
-		Question:     "什么是 RAG",
-		Prompt:       "system: use context\n\nuser: 什么是 RAG",
+		TraceID:        "trace-123",
+		ProjectName:    "go-rag",
+		RootSpanName:   "http.v1.chat_completions",
+		Question:       "什么是 RAG",
+		OriginalQuery:  "什么是 RAG",
+		RewrittenQuery: "什么是检索增强生成",
+		Prompt:         "system: use context\n\nuser: 什么是 RAG",
 		PromptMessages: []tracebridge.PromptMessage{
 			{Role: "system", Content: "use context"},
 			{Role: "user", Content: "什么是 RAG"},
@@ -35,5 +37,11 @@ func TestSampleRecordRoundTripsPromptMessages(t *testing.T) {
 	}
 	if stored.Sample.PromptMessages[1] != (tracebridge.PromptMessage{Role: "user", Content: "什么是 RAG"}) {
 		t.Fatalf("PromptMessages[1] = %+v", stored.Sample.PromptMessages[1])
+	}
+	if stored.Sample.OriginalQuery != "什么是 RAG" {
+		t.Fatalf("OriginalQuery = %q", stored.Sample.OriginalQuery)
+	}
+	if stored.Sample.RewrittenQuery != "什么是检索增强生成" {
+		t.Fatalf("RewrittenQuery = %q", stored.Sample.RewrittenQuery)
 	}
 }

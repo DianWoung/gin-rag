@@ -17,13 +17,18 @@ const (
 	StatusError   = "error"
 )
 
+const (
+	retrievalPrecisionK             = 4
+	queryChunkRelevantOverlapCutoff = 0.1
+)
+
 type ResultSummary struct {
-	Target        string             `json:"target"`
-	ScoredCount   int                `json:"scored_count"`
-	SkippedCount  int                `json:"skipped_count"`
-	ErrorCount    int                `json:"error_count"`
-	AverageScore  float64            `json:"average_score"`
-	MetricScores  map[string]float64 `json:"metric_scores,omitempty"`
+	Target       string             `json:"target"`
+	ScoredCount  int                `json:"scored_count"`
+	SkippedCount int                `json:"skipped_count"`
+	ErrorCount   int                `json:"error_count"`
+	AverageScore float64            `json:"average_score"`
+	MetricScores map[string]float64 `json:"metric_scores,omitempty"`
 }
 
 func ScoreChatSample(stored StoredSample, replay *ReplayRun) []EvaluationResult {
@@ -81,12 +86,54 @@ func SummarizeResults(results []EvaluationResult) []ResultSummary {
 
 func scoreTarget(sampleID, replayRunID, target, answer string, sample tracebridge.ChatSample) []EvaluationResult {
 	results := []EvaluationResult{
+		buildRewriteFidelity(sampleID, replayRunID, target, sample),
+		buildRetrievalPrecisionAtK(sampleID, replayRunID, target, sample),
 		buildRetrievalRelevance(sampleID, replayRunID, target, answer, sample),
 		buildGroundedAnswer(sampleID, replayRunID, target, answer, sample),
 		buildCitationCorrectness(sampleID, replayRunID, target, answer, sample),
 		buildAbstentionQuality(sampleID, replayRunID, target, answer, sample),
 	}
 	return results
+}
+
+func buildRewriteFidelity(sampleID, replayRunID, target string, sample tracebridge.ChatSample) EvaluationResult {
+	original := strings.TrimSpace(firstNonEmpty(sample.OriginalQuery, sample.Question))
+	if original == "" {
+		return newResult(sampleID, replayRunID, target, "rewrite_fidelity", StatusSkipped, 0, "original query is empty")
+	}
+
+	rewritten := strings.TrimSpace(sample.RewrittenQuery)
+	if rewritten == "" {
+		return newResult(sampleID, replayRunID, target, "rewrite_fidelity", StatusSkipped, 0, "rewritten query is empty")
+	}
+
+	score := symmetricTokenOverlapScore(original, rewritten)
+	return newResult(sampleID, replayRunID, target, "rewrite_fidelity", StatusScored, score, fmt.Sprintf("query token overlap %.2f", score))
+}
+
+func buildRetrievalPrecisionAtK(sampleID, replayRunID, target string, sample tracebridge.ChatSample) EvaluationResult {
+	if len(sample.Chunks) == 0 {
+		return newResult(sampleID, replayRunID, target, "retrieval_precision_at_k", StatusSkipped, 0, "no retrieved chunks captured")
+	}
+
+	query := strings.TrimSpace(firstNonEmpty(sample.RewrittenQuery, sample.OriginalQuery, sample.Question))
+	if query == "" {
+		return newResult(sampleID, replayRunID, target, "retrieval_precision_at_k", StatusSkipped, 0, "query is empty")
+	}
+
+	limit := retrievalPrecisionK
+	if len(sample.Chunks) < limit {
+		limit = len(sample.Chunks)
+	}
+
+	relevant := 0
+	for i := 0; i < limit; i++ {
+		if overlapScore(query, sample.Chunks[i].Content) >= queryChunkRelevantOverlapCutoff {
+			relevant++
+		}
+	}
+	score := float64(relevant) / float64(limit)
+	return newResult(sampleID, replayRunID, target, "retrieval_precision_at_k", StatusScored, score, fmt.Sprintf("%d/%d chunks above overlap %.2f", relevant, limit, queryChunkRelevantOverlapCutoff))
 }
 
 func buildRetrievalRelevance(sampleID, replayRunID, target, answer string, sample tracebridge.ChatSample) EvaluationResult {
@@ -180,6 +227,23 @@ func overlapScore(answer, corpus string) float64 {
 	return float64(matched) / float64(len(answerTokens))
 }
 
+func symmetricTokenOverlapScore(left, right string) float64 {
+	leftTokens := tokenSet(left)
+	rightTokens := tokenSet(right)
+	if len(leftTokens) == 0 || len(rightTokens) == 0 {
+		return 0
+	}
+
+	matched := 0
+	for token := range leftTokens {
+		if _, ok := rightTokens[token]; ok {
+			matched++
+		}
+	}
+
+	return float64(2*matched) / float64(len(leftTokens)+len(rightTokens))
+}
+
 func tokenSet(text string) map[string]struct{} {
 	text = strings.ToLower(text)
 	replacer := strings.NewReplacer(",", " ", ".", " ", "。", " ", "，", " ", "\n", " ", "\t", " ")
@@ -201,4 +265,14 @@ func parsePositiveInt(text string) int {
 		result = result*10 + int(r-'0')
 	}
 	return result
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+
+	return ""
 }
