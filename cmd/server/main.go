@@ -13,6 +13,7 @@ import (
 	"github.com/dianwang-mac/go-rag/internal/handler"
 	"github.com/dianwang-mac/go-rag/internal/ingest"
 	"github.com/dianwang-mac/go-rag/internal/llm"
+	"github.com/dianwang-mac/go-rag/internal/observability"
 	"github.com/dianwang-mac/go-rag/internal/rerank"
 	"github.com/dianwang-mac/go-rag/internal/server"
 	"github.com/dianwang-mac/go-rag/internal/service"
@@ -26,6 +27,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+
+	obsCfg, err := observability.FromTracingConfig(cfg.Tracing)
+	if err != nil {
+		log.Fatalf("build tracing config: %v", err)
+	}
+	_, shutdownTracing, err := observability.NewProvider(ctx, obsCfg)
+	if err != nil {
+		log.Fatalf("init tracing: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Printf("shutdown tracing: %v", err)
+		}
+	}()
 
 	db, err := store.OpenMySQL(cfg.MySQLDSN)
 	if err != nil {

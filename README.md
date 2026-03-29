@@ -31,6 +31,13 @@ RAG 系统的质量保障采用三层闭环：
 
 这三层分别覆盖“离线打分、上线前拦截、上线后追踪”，避免质量问题只在线上暴露。
 
+当前代码已接入 Phoenix OTLP tracing，覆盖：
+
+- HTTP 根请求 span
+- chat 主链路中的知识库选择、query rewrite、query embedding、Qdrant 检索、rerank、prompt 组装
+- ingest 主链路中的 PDF 文本抽取、切分、chunk embedding、Qdrant collection / upsert
+- knowledge base 与 Qdrant collection 生命周期操作
+
 ## MySQL 元数据表
 
 - `knowledge_bases`
@@ -54,6 +61,12 @@ RAG 系统的质量保障采用三层闭环：
 - `EMBEDDING_MODEL_ID`: 仅 compose 的 embedding 容器使用，默认 `BAAI/bge-m3`
 - `CHUNK_SIZE`: 切块大小，默认 `800`
 - `CHUNK_OVERLAP`: 切块重叠，默认 `120`
+- `PHOENIX_TRACING_ENABLED`: 是否启用 Phoenix tracing；默认在未配置时关闭
+- `PHOENIX_OTLP_ENDPOINT`: Phoenix OTLP HTTP endpoint；建议使用 `http://127.0.0.1:6006/v1/traces`
+- `PHOENIX_BASE_URL`: Phoenix REST API base URL；`evalctl export-trace` 未显式设置时会尝试从 `PHOENIX_OTLP_ENDPOINT` 推导
+- `PHOENIX_PROJECT_NAME`: Phoenix project 名称；启用 tracing 时必填
+- `PHOENIX_API_KEY`: Phoenix API Key；本地未开启鉴权时可留空
+- `PHOENIX_EVENT_BODY_LIMIT`: trace 中大文本字段的截断上限，默认 `8192`
 
 兼容说明：
 
@@ -61,6 +74,95 @@ RAG 系统的质量保障采用三层闭环：
 - 若未设置 `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY`，embedding 侧会继续复用聊天侧的 `OPENAI_BASE_URL` / `OPENAI_API_KEY`
 - 新部署建议直接改用 `EMBEDDING_*` 三个变量，避免 chat 和 embedding 配置继续耦合
 - 即使 embedding 已切到本地服务，`app` 仍然要求 `OPENAI_API_KEY`，因为聊天侧没有改成本地模型
+- Phoenix tracing 启用后会自动把 `PHOENIX_PROJECT_NAME` 写入 OpenInference resource attribute，并用 `authorization: Bearer <PHOENIX_API_KEY>` 向 OTLP endpoint 发送 trace
+
+## Phoenix Trace Export
+
+当前仓库已经提供从 Phoenix trace 到 replay / score 的最小闭环。
+
+### 1. 导出 trace 为样本
+
+```bash
+PHOENIX_BASE_URL=http://127.0.0.1:6006 \
+PHOENIX_PROJECT_NAME=go-rag \
+go run ./cmd/evalctl export-trace <trace_id>
+```
+
+如果你的 Phoenix 开启了鉴权，再额外提供：
+
+```bash
+PHOENIX_API_KEY=your-phoenix-api-key
+```
+
+`export-trace` 会：
+
+- 从 Phoenix 项目里拉取对应 trace 的 spans
+- 识别 `http.v1.chat_completions` trace
+- 抽取 question、prompt、answer、retrieved chunks、知识库信息、模型配置
+- 把样本持久化到 MySQL 的 `sample_records`
+- 输出标准化 JSON，包含 `sample_id`
+
+### 2. 用当前模型配置回放样本
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+OPENAI_API_KEY=sk-xxxx \
+OPENAI_BASE_URL=https://api.openai.com/v1 \
+OPENAI_CHAT_MODEL=gpt-4o-mini \
+go run ./cmd/evalctl replay-sample <sample_id>
+```
+
+`replay-sample` 会：
+
+- 从 MySQL 读取导出的样本
+- 复用样本里的 prompt、model、temperature
+- 重新调用当前 chat model 生成答案
+- 把回放结果持久化到 `replay_run_records`
+
+### 3. 给 captured / replay 两个目标打分
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+go run ./cmd/evalctl score-sample <sample_id>
+```
+
+`score-sample` 会：
+
+- 读取导出样本
+- 读取该样本最新一次 replay 结果
+- 产出 `captured` 与 `replay` 两组 metric
+- 把结果持久化到 `evaluation_result_records`
+
+当前内置的 `score` 是最小可运行实现，使用启发式规则计算：
+
+- `retrieval_relevance`
+- `grounded_answer`
+- `citation_correctness`
+- `abstention_quality`
+
+它适合先打通完整流程和回归验证，不等价于正式的 `EinoExt evaluator` 或 LLM-as-a-judge 评测。后续如果接上更完整的 evaluator，可以继续复用现有 `sample -> replay -> score` 这条链路。
+
+### 4. 一条命令串起完整流程
+
+如果你已经拿到 Phoenix 里的 `trace_id`，也可以直接：
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+PHOENIX_BASE_URL=http://127.0.0.1:6006 \
+PHOENIX_PROJECT_NAME=go-rag \
+OPENAI_API_KEY=sk-xxxx \
+OPENAI_BASE_URL=https://api.openai.com/v1 \
+OPENAI_CHAT_MODEL=gpt-4o-mini \
+go run ./cmd/evalctl run-trace <trace_id>
+```
+
+`run-trace` 会顺序执行：
+
+- `export-trace`
+- `replay-sample`
+- `score-sample`
+
+并一次性输出 `sample_id`、`replay`、原始 `results` 和按 `captured/replay` 聚合后的 `summary`。
 
 ## 启动
 

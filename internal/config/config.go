@@ -16,6 +16,7 @@ type Config struct {
 	Embedding EmbeddingConfig
 	Chunking  ChunkingConfig
 	Reranker  RerankerConfig
+	Tracing   TracingConfig
 }
 
 type QdrantConfig struct {
@@ -42,6 +43,14 @@ type ChunkingConfig struct {
 
 type RerankerConfig struct {
 	BaseURL string
+}
+
+type TracingConfig struct {
+	Enabled        bool
+	Endpoint       string
+	ProjectName    string
+	APIKey         string
+	EventBodyLimit int
 }
 
 func Load() (*Config, error) {
@@ -79,10 +88,23 @@ func Load() (*Config, error) {
 		Reranker: RerankerConfig{
 			BaseURL: readString("RERANKER_BASE_URL", ""),
 		},
+		Tracing: TracingConfig{
+			Enabled:        readBool("PHOENIX_TRACING_ENABLED", hasAnyValue("PHOENIX_OTLP_ENDPOINT", "PHOENIX_COLLECTOR_ENDPOINT", "PHOENIX_PROJECT_NAME", "PHOENIX_API_KEY")),
+			Endpoint:       readFirstString("", "PHOENIX_OTLP_ENDPOINT", "PHOENIX_COLLECTOR_ENDPOINT"),
+			ProjectName:    readString("PHOENIX_PROJECT_NAME", ""),
+			APIKey:         readString("PHOENIX_API_KEY", ""),
+			EventBodyLimit: readInt("PHOENIX_EVENT_BODY_LIMIT", 8192),
+		},
 	}
 
 	if cfg.Embedding.BaseURL == "" {
 		log.Println("WARNING: EMBEDDING_BASE_URL is empty, embedding requests will fall back to the OpenAI default endpoint")
+	}
+	if cfg.Tracing.Enabled && cfg.Tracing.Endpoint == "" {
+		return nil, fmt.Errorf("PHOENIX_TRACING_ENABLED is true but PHOENIX_OTLP_ENDPOINT is empty")
+	}
+	if cfg.Tracing.Enabled && cfg.Tracing.ProjectName == "" {
+		return nil, fmt.Errorf("PHOENIX_TRACING_ENABLED is true but PHOENIX_PROJECT_NAME is empty")
 	}
 
 	return cfg, nil
@@ -120,4 +142,28 @@ func readInt(key string, fallback int) int {
 	}
 
 	return parsed
+}
+
+func readBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+
+	return parsed
+}
+
+func hasAnyValue(keys ...string) bool {
+	for _, key := range keys {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+
+	return false
 }

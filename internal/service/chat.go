@@ -19,9 +19,11 @@ import (
 	"github.com/dianwang-mac/go-rag/internal/apperr"
 	"github.com/dianwang-mac/go-rag/internal/entity"
 	"github.com/dianwang-mac/go-rag/internal/llm"
+	"github.com/dianwang-mac/go-rag/internal/observability"
 	"github.com/dianwang-mac/go-rag/internal/rerank"
 	"github.com/dianwang-mac/go-rag/internal/store"
-)
+	"go.opentelemetry.io/otel/attribute"
+ )
 
 const (
 	retrievalTopK = 4  // final number of chunks fed to LLM
@@ -51,11 +53,38 @@ func NewChatService(db *gorm.DB, vectors *store.QdrantStore, provider *llm.Provi
 	}
 }
 
-func (s *ChatService) ChatCompletion(ctx context.Context, req appdto.ChatRequest) (appdto.ChatResult, error) {
+func (s *ChatService) ChatCompletion(ctx context.Context, req appdto.ChatRequest) (result appdto.ChatResult, err error) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		observability.SpanChatCompletion,
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+		attribute.Int(observability.AttrHistoryLength, len(req.Messages)),
+		observability.TextAttribute("rag.model", req.Model),
+		attribute.Float64("rag.temperature", float64(req.Temperature)),
+	)
+	defer func() {
+		if result.Content != "" {
+			span.SetAttributes(
+				observability.TextAttribute(observability.AttrAnswer, result.Content),
+				attribute.Int("rag.total_tokens", result.Usage.TotalTokens),
+			)
+		}
+		observability.RecordError(span, err)
+		span.End()
+	}()
+
 	kb, question, history, err := s.prepareChatRequest(ctx, req)
 	if err != nil {
 		return appdto.ChatResult{}, err
 	}
+	span.SetAttributes(
+		attribute.Int(observability.AttrKnowledgeBaseID, int(kb.ID)),
+		observability.TextAttribute(observability.AttrKnowledgeBaseName, kb.Name),
+		attribute.String(observability.AttrCollectionName, kb.CollectionName),
+		attribute.String(observability.AttrEmbeddingModel, kb.EmbeddingModel),
+		observability.TextAttribute(observability.AttrQuestion, question),
+		attribute.Int(observability.AttrHistoryLength, len(history)),
+	)
 	runner, err := s.buildRAGRunner(ctx, kb, req)
 	if err != nil {
 		return appdto.ChatResult{}, err
@@ -83,18 +112,41 @@ func (s *ChatService) ChatCompletion(ctx context.Context, req appdto.ChatRequest
 		modelName = s.provider.DefaultChatModel()
 	}
 
-	return appdto.ChatResult{
+	result = appdto.ChatResult{
 		Model:   modelName,
 		Content: answer,
 		Usage:   usage,
-	}, nil
+	}
+
+	return result, nil
 }
 
-func (s *ChatService) ChatCompletionStream(ctx context.Context, req appdto.ChatRequest) (*schema.StreamReader[appdto.ChatStreamChunk], error) {
+func (s *ChatService) ChatCompletionStream(ctx context.Context, req appdto.ChatRequest) (stream *schema.StreamReader[appdto.ChatStreamChunk], err error) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		observability.SpanChatCompletionStream,
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+		attribute.Int(observability.AttrHistoryLength, len(req.Messages)),
+		observability.TextAttribute("rag.model", req.Model),
+		attribute.Float64("rag.temperature", float64(req.Temperature)),
+	)
+	defer func() {
+		observability.RecordError(span, err)
+		span.End()
+	}()
+
 	kb, question, history, err := s.prepareChatRequest(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	span.SetAttributes(
+		attribute.Int(observability.AttrKnowledgeBaseID, int(kb.ID)),
+		observability.TextAttribute(observability.AttrKnowledgeBaseName, kb.Name),
+		attribute.String(observability.AttrCollectionName, kb.CollectionName),
+		attribute.String(observability.AttrEmbeddingModel, kb.EmbeddingModel),
+		observability.TextAttribute(observability.AttrQuestion, question),
+		attribute.Int(observability.AttrHistoryLength, len(history)),
+	)
 
 	runner, err := s.buildRAGRunner(ctx, kb, req)
 	if err != nil {
@@ -149,30 +201,55 @@ func (s *ChatService) ChatCompletionStream(ctx context.Context, req appdto.ChatR
 	return stream, nil
 }
 
-func (s *ChatService) findKnowledgeBase(ctx context.Context, req appdto.ChatRequest) (*entity.KnowledgeBase, error) {
+func (s *ChatService) findKnowledgeBase(ctx context.Context, req appdto.ChatRequest) (kb *entity.KnowledgeBase, err error) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		observability.SpanChatFindKnowledgeBase,
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+		attribute.Int(observability.AttrKnowledgeBaseID, int(req.KnowledgeBaseID)),
+		observability.TextAttribute(observability.AttrKnowledgeBaseName, req.KnowledgeBaseName),
+	)
+	defer func() {
+		if kb != nil {
+			span.SetAttributes(
+				attribute.Int(observability.AttrKnowledgeBaseID, int(kb.ID)),
+				observability.TextAttribute(observability.AttrKnowledgeBaseName, kb.Name),
+				attribute.String(observability.AttrCollectionName, kb.CollectionName),
+			)
+		}
+		observability.RecordError(span, err)
+		span.End()
+	}()
+
 	query := s.db.WithContext(ctx).Model(&entity.KnowledgeBase{})
 
-	var kb entity.KnowledgeBase
+	var model entity.KnowledgeBase
 	switch {
 	case req.KnowledgeBaseID > 0:
-		if err := query.First(&kb, req.KnowledgeBaseID).Error; err != nil {
+		if err = query.First(&model, req.KnowledgeBaseID).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
-				return nil, apperr.New(http.StatusNotFound, fmt.Errorf("knowledge base not found"))
+				err = apperr.New(http.StatusNotFound, fmt.Errorf("knowledge base not found"))
+				return nil, err
 			}
-			return nil, fmt.Errorf("find knowledge base by id: %w", err)
+			err = fmt.Errorf("find knowledge base by id: %w", err)
+			return nil, err
 		}
 	case strings.TrimSpace(req.KnowledgeBaseName) != "":
-		if err := query.Where("name = ?", strings.TrimSpace(req.KnowledgeBaseName)).First(&kb).Error; err != nil {
+		if err = query.Where("name = ?", strings.TrimSpace(req.KnowledgeBaseName)).First(&model).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
-				return nil, apperr.New(http.StatusNotFound, fmt.Errorf("knowledge base not found"))
+				err = apperr.New(http.StatusNotFound, fmt.Errorf("knowledge base not found"))
+				return nil, err
 			}
-			return nil, fmt.Errorf("find knowledge base by name: %w", err)
+			err = fmt.Errorf("find knowledge base by name: %w", err)
+			return nil, err
 		}
 	default:
-		return nil, apperr.New(http.StatusBadRequest, fmt.Errorf("knowledge_base_id or knowledge_base_name is required"))
+		err = apperr.New(http.StatusBadRequest, fmt.Errorf("knowledge_base_id or knowledge_base_name is required"))
+		return nil, err
 	}
 
-	return &kb, nil
+	kb = &model
+	return kb, nil
 }
 
 type sourceMatch struct {
@@ -247,7 +324,20 @@ func joinHistory(history []*schema.Message) string {
 	return strings.Join(parts, "\n")
 }
 
-func (s *ChatService) rerankMatches(ctx context.Context, query string, matches []store.SearchResult) ([]store.SearchResult, error) {
+func (s *ChatService) rerankMatches(ctx context.Context, query string, matches []store.SearchResult) (reranked []store.SearchResult, err error) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		observability.SpanChatRerank,
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+		observability.TextAttribute(observability.AttrOriginalQuery, query),
+		attribute.Int(observability.AttrMatchCount, len(matches)),
+	)
+	defer func() {
+		span.SetAttributes(attribute.Int(observability.AttrMatchCount, len(reranked)))
+		observability.RecordError(span, err)
+		span.End()
+	}()
+
 	texts := make([]string, len(matches))
 	for i, m := range matches {
 		texts[i] = m.Content
@@ -258,7 +348,7 @@ func (s *ChatService) rerankMatches(ctx context.Context, query string, matches [
 		return nil, fmt.Errorf("rerank: %w", err)
 	}
 
-	reranked := make([]store.SearchResult, len(ranked))
+	reranked = make([]store.SearchResult, len(ranked))
 	for i, r := range ranked {
 		reranked[i] = matches[r.Index]
 		reranked[i].Score = float32(r.Score)
@@ -274,7 +364,22 @@ const queryRewritePrompt = `Given the following conversation history and a follo
 // question into a single standalone retrieval query. This resolves pronouns,
 // omissions, and implicit references so that embedding search works correctly
 // for multi-turn conversations.
-func (s *ChatService) rewriteQuery(ctx context.Context, chatModel einomodel.BaseChatModel, question string, history []*schema.Message) (string, error) {
+func (s *ChatService) rewriteQuery(ctx context.Context, chatModel einomodel.BaseChatModel, question string, history []*schema.Message) (rewritten string, err error) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		observability.SpanChatRewriteQuery,
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+		observability.TextAttribute(observability.AttrOriginalQuery, question),
+		attribute.Int(observability.AttrHistoryLength, len(history)),
+	)
+	defer func() {
+		if rewritten != "" {
+			span.SetAttributes(observability.TextAttribute(observability.AttrRewrittenQuery, rewritten))
+		}
+		observability.RecordError(span, err)
+		span.End()
+	}()
+
 	var historyText strings.Builder
 	for _, msg := range history {
 		historyText.WriteString(fmt.Sprintf("%s: %s\n", msg.Role, msg.Content))
@@ -290,7 +395,7 @@ func (s *ChatService) rewriteQuery(ctx context.Context, chatModel einomodel.Base
 		return "", fmt.Errorf("generate rewritten query: %w", err)
 	}
 
-	rewritten := strings.TrimSpace(resp.Content)
+	rewritten = strings.TrimSpace(resp.Content)
 	if rewritten == "" {
 		return question, nil
 	}
@@ -299,8 +404,29 @@ func (s *ChatService) rewriteQuery(ctx context.Context, chatModel einomodel.Base
 	return rewritten, nil
 }
 
-func (s *ChatService) prepareChatRequest(ctx context.Context, req appdto.ChatRequest) (*entity.KnowledgeBase, string, []*schema.Message, error) {
-	kb, err := s.findKnowledgeBase(ctx, req)
+func (s *ChatService) prepareChatRequest(ctx context.Context, req appdto.ChatRequest) (kb *entity.KnowledgeBase, question string, history []*schema.Message, err error) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		observability.SpanChatPrepareRequest,
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+		attribute.Int(observability.AttrHistoryLength, len(req.Messages)),
+	)
+	defer func() {
+		if kb != nil {
+			span.SetAttributes(
+				attribute.Int(observability.AttrKnowledgeBaseID, int(kb.ID)),
+				attribute.String(observability.AttrCollectionName, kb.CollectionName),
+			)
+		}
+		if question != "" {
+			span.SetAttributes(observability.TextAttribute(observability.AttrQuestion, question))
+		}
+		span.SetAttributes(attribute.Int(observability.AttrHistoryLength, len(history)))
+		observability.RecordError(span, err)
+		span.End()
+	}()
+
+	kb, err = s.findKnowledgeBase(ctx, req)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -308,7 +434,7 @@ func (s *ChatService) prepareChatRequest(ctx context.Context, req appdto.ChatReq
 		return nil, "", nil, apperr.New(http.StatusBadRequest, fmt.Errorf("knowledge base has no collection"))
 	}
 
-	question, history := splitMessages(req.Messages)
+	question, history = splitMessages(req.Messages)
 	if question == "" {
 		return nil, "", nil, apperr.New(http.StatusBadRequest, fmt.Errorf("last user message is required"))
 	}
@@ -316,7 +442,22 @@ func (s *ChatService) prepareChatRequest(ctx context.Context, req appdto.ChatReq
 	return kb, question, history, nil
 }
 
-func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBase, req appdto.ChatRequest) (compose.Runnable[ragInput, *schema.Message], error) {
+func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBase, req appdto.ChatRequest) (runner compose.Runnable[ragInput, *schema.Message], err error) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		observability.SpanChatBuildRunner,
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+		attribute.Int(observability.AttrKnowledgeBaseID, int(kb.ID)),
+		attribute.String(observability.AttrCollectionName, kb.CollectionName),
+		attribute.String(observability.AttrEmbeddingModel, kb.EmbeddingModel),
+		observability.TextAttribute("rag.model", req.Model),
+		attribute.Float64("rag.temperature", float64(req.Temperature)),
+	)
+	defer func() {
+		observability.RecordError(span, err)
+		span.End()
+	}()
+
 	chatModel, err := s.provider.NewChatModel(ctx, req.Model, req.Temperature)
 	if err != nil {
 		return nil, err
@@ -328,7 +469,24 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 	}
 
 	chain := compose.NewChain[ragInput, *schema.Message]()
-	chain.AppendLambda(compose.InvokableLambda(func(ctx context.Context, in ragInput) ([]*schema.Message, error) {
+	chain.AppendLambda(compose.InvokableLambda(func(ctx context.Context, in ragInput) (messages []*schema.Message, err error) {
+		ctx, promptSpan := observability.StartSpan(
+			ctx,
+			observability.SpanChatRAGPrompt,
+			attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+			attribute.String(observability.AttrCollectionName, in.CollectionName),
+			attribute.String(observability.AttrEmbeddingModel, in.EmbeddingModel),
+			observability.TextAttribute(observability.AttrQuestion, in.Question),
+			attribute.Int(observability.AttrHistoryLength, len(in.History)),
+		)
+		defer func() {
+			if len(messages) > 0 {
+				promptSpan.SetAttributes(observability.TextAttribute(observability.AttrPrompt, flattenMessages(messages)))
+			}
+			observability.RecordError(promptSpan, err)
+			promptSpan.End()
+		}()
+
 		// When conversation history exists, rewrite the question into a
 		// standalone retrieval query so that pronouns and omissions are
 		// resolved before embedding.
@@ -343,10 +501,21 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 			}
 		}
 
-		vectors, err := embedder.EmbedStrings(ctx, []string{retrievalQuery})
+		embedCtx, embedSpan := observability.StartSpan(
+			ctx,
+			observability.SpanChatEmbedQuery,
+			attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+			observability.TextAttribute(observability.AttrOriginalQuery, retrievalQuery),
+		)
+		vectors, err := embedder.EmbedStrings(embedCtx, []string{retrievalQuery})
 		if err != nil {
-			return nil, fmt.Errorf("embed question: %w", err)
+			err = fmt.Errorf("embed question: %w", err)
+			observability.RecordError(embedSpan, err)
+			embedSpan.End()
+			return nil, err
 		}
+		embedSpan.SetAttributes(attribute.Int("rag.query_vector_dim", len(vectors[0])))
+		embedSpan.End()
 
 		// When reranker is available, cast a wider net and let the
 		// cross-encoder pick the best matches.
@@ -372,12 +541,20 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 		logRetrieval(in.Question, retrievalQuery, matches, reranked)
 
 		sources := s.buildSources(ctx, matches)
+		promptSpan.SetAttributes(
+			observability.TextAttribute(observability.AttrOriginalQuery, in.Question),
+			observability.TextAttribute(observability.AttrRewrittenQuery, retrievalQuery),
+			attribute.Int(observability.AttrMatchCount, len(matches)),
+			attribute.Bool(observability.AttrReranked, reranked),
+			observability.TextListAttribute(observability.AttrRetrievedChunks, matchContents(matches)),
+		)
 
-		return buildPromptMessages(in.Question, in.History, sources), nil
+		messages = buildPromptMessages(in.Question, in.History, sources)
+		return messages, nil
 	}))
 	chain.AppendChatModel(chatModel)
 
-	runner, err := chain.Compile(ctx)
+	runner, err = chain.Compile(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("compile rag chain: %w", err)
 	}
@@ -387,7 +564,15 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 
 // buildSources looks up document titles for the search results and returns
 // sourceMatch slices suitable for prompt construction with citations.
-func (s *ChatService) buildSources(ctx context.Context, matches []store.SearchResult) []sourceMatch {
+func (s *ChatService) buildSources(ctx context.Context, matches []store.SearchResult) (sources []sourceMatch) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		observability.SpanChatBuildSources,
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceChat),
+		attribute.Int(observability.AttrMatchCount, len(matches)),
+	)
+	defer span.End()
+
 	if len(matches) == 0 {
 		return nil
 	}
@@ -413,18 +598,21 @@ func (s *ChatService) buildSources(ctx context.Context, matches []store.SearchRe
 		}
 	}
 
-	sources := make([]sourceMatch, len(matches))
+	sources = make([]sourceMatch, len(matches))
+	titles := make([]string, 0, len(matches))
 	for i, m := range matches {
 		title := titleMap[m.DocumentID]
 		if title == "" {
 			title = fmt.Sprintf("doc_%d", m.DocumentID)
 		}
+		titles = append(titles, title)
 		sources[i] = sourceMatch{
 			Index:    i,
 			DocTitle: title,
 			Content:  m.Content,
 		}
 	}
+	span.SetAttributes(observability.TextListAttribute("rag.source_titles", titles))
 	return sources
 }
 
@@ -450,4 +638,22 @@ func logRetrieval(originalQuery, retrievalQuery string, matches []store.SearchRe
 	}
 
 	slog.Info("retrieval", attrs...)
+}
+
+func flattenMessages(messages []*schema.Message) string {
+	parts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		parts = append(parts, fmt.Sprintf("%s: %s", message.Role, message.Content))
+	}
+
+	return strings.Join(parts, "\n\n")
+}
+
+func matchContents(matches []store.SearchResult) []string {
+	contents := make([]string, 0, len(matches))
+	for _, match := range matches {
+		contents = append(contents, match.Content)
+	}
+
+	return contents
 }

@@ -138,3 +138,39 @@ func TestLoadFromEnvStillRequiresOpenAIAPIKeyWhenEmbeddingConfigured(t *testing.
 		t.Fatal("Load() error = nil, want OPENAI_API_KEY required error")
 	}
 }
+
+func TestLoadIncludesPhoenixTracingConfig(t *testing.T) {
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("PHOENIX_OTLP_ENDPOINT", "http://127.0.0.1:6006")
+	t.Setenv("PHOENIX_PROJECT_NAME", "go-rag")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Tracing.Enabled {
+		t.Fatal("Tracing.Enabled = false, want true")
+	}
+	if cfg.Tracing.Endpoint != "http://127.0.0.1:6006" {
+		t.Fatalf("Tracing.Endpoint = %q, want http://127.0.0.1:6006", cfg.Tracing.Endpoint)
+	}
+	if cfg.Tracing.ProjectName != "go-rag" {
+		t.Fatalf("Tracing.ProjectName = %q, want go-rag", cfg.Tracing.ProjectName)
+	}
+	if cfg.Tracing.EventBodyLimit != 8192 {
+		t.Fatalf("Tracing.EventBodyLimit = %d, want 8192", cfg.Tracing.EventBodyLimit)
+	}
+}
+
+func TestLoadRejectsEnabledTracingWithoutEndpoint(t *testing.T) {
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("PHOENIX_TRACING_ENABLED", "true")
+	t.Setenv("PHOENIX_OTLP_ENDPOINT", "")
+	t.Setenv("PHOENIX_PROJECT_NAME", "go-rag")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want invalid tracing config error")
+	}
+}

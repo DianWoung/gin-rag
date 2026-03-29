@@ -6,11 +6,12 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/dianwang-mac/go-rag/internal/handler"
+	"github.com/dianwang-mac/go-rag/internal/observability"
 )
 
 func NewRouter(internalAPI *handler.InternalAPIHandler, openAI *handler.OpenAIHandler) *gin.Engine {
 	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery())
+	router.Use(gin.Logger(), gin.Recovery(), observability.Middleware())
 
 	router.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
