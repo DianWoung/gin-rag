@@ -180,12 +180,26 @@ go run ./cmd/server
 OPENAI_API_KEY=sk-xxxx docker compose up --build
 ```
 
+如果你要连 Phoenix 一起拉起来，改用：
+
+```bash
+OPENAI_API_KEY=sk-xxxx \
+docker compose -f docker-compose.yml -f docker-compose.phoenix.yml up --build
+```
+
 默认 compose 接线：
 
 - `embedding`: `ghcr.io/huggingface/text-embeddings-inference:cpu-1.9`
 - `embedding` 对宿主机暴露 `6008`，对 compose 内 `app` 暴露 `http://embedding:80/v1`
 - `app` 默认使用 `EMBEDDING_BASE_URL=http://embedding:80/v1`
 - `app` 仍然必须提供 `OPENAI_API_KEY`
+
+启用 `docker-compose.phoenix.yml` 后，额外会有：
+
+- `phoenix`: `arizephoenix/phoenix:latest`
+- 宿主机访问地址：`http://127.0.0.1:6006`
+- compose 内 `app` 默认把 trace 发到 `http://phoenix:6006/v1/traces`
+- `evalctl` 默认通过 `PHOENIX_BASE_URL=http://127.0.0.1:6006` 读取 traces
 
 如果聊天走云端模型、embedding 走 compose 内置本地服务，通常只需要：
 

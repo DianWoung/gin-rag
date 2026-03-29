@@ -1,0 +1,26 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    restart: unless-stopped
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - phoenix_data:/mnt/data
+
+  app:
+    environment:
+      PHOENIX_TRACING_ENABLED: "true"
+      PHOENIX_OTLP_ENDPOINT: ${PHOENIX_OTLP_ENDPOINT:-http://phoenix:6006/v1/traces}
+      PHOENIX_BASE_URL: ${PHOENIX_BASE_URL:-http://127.0.0.1:6006}
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-go-rag}
+      PHOENIX_API_KEY: ${PHOENIX_API_KEY:-}
+      PHOENIX_EVENT_BODY_LIMIT: ${PHOENIX_EVENT_BODY_LIMIT:-8192}
+    depends_on:
+      phoenix:
+        condition: service_started
+
+volumes:
+  phoenix_data:
