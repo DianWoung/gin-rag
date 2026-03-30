@@ -9,6 +9,8 @@ type ChatRequest struct {
 	Model             string        `json:"model"`
 	KnowledgeBaseID   uint          `json:"knowledge_base_id"`
 	KnowledgeBaseName string        `json:"knowledge_base_name"`
+	DocumentIDs       []uint        `json:"document_ids,omitempty"`
+	SourceTypes       []string      `json:"source_types,omitempty"`
 	Messages          []ChatMessage `json:"messages"`
 	Temperature       float32       `json:"temperature"`
 	Stream            bool          `json:"stream"`

@@ -46,6 +46,7 @@ type fakeVectorStore struct {
 	upsertCalls       int
 	deleteCalls       int
 	lastCollection    string
+	lastUpsertChunks  []store.ChunkVector
 	lastDeletedPoints []string
 }
 
@@ -57,6 +58,7 @@ func (f *fakeVectorStore) EnsureCollection(context.Context, string, int) error {
 func (f *fakeVectorStore) UpsertChunks(_ context.Context, collectionName string, chunks []store.ChunkVector) error {
 	f.upsertCalls++
 	f.lastCollection = collectionName
+	f.lastUpsertChunks = append([]store.ChunkVector(nil), chunks...)
 	if f.upsertErr != nil {
 		return f.upsertErr
 	}
@@ -123,7 +125,8 @@ func newDocumentServiceForTest(db *gorm.DB, vectors *fakeVectorStore, provider f
 func TestIndexDocumentMarksIndexedOnSuccess(t *testing.T) {
 	db := openDocumentTestDB(t)
 	_, doc := seedIndexedDocumentFixture(t, db, "imported")
-	service := newDocumentServiceForTest(db, &fakeVectorStore{}, fakeEmbeddingProvider{
+	vectors := &fakeVectorStore{}
+	service := newDocumentServiceForTest(db, vectors, fakeEmbeddingProvider{
 		embedder: fakeEmbedder{vectors: [][]float64{{1, 2}}},
 	})
 
@@ -133,6 +136,15 @@ func TestIndexDocumentMarksIndexedOnSuccess(t *testing.T) {
 	}
 	if got.Status != "indexed" {
 		t.Fatalf("Status = %q, want indexed", got.Status)
+	}
+	if len(vectors.lastUpsertChunks) != 1 {
+		t.Fatalf("upsert chunk count = %d, want 1", len(vectors.lastUpsertChunks))
+	}
+	if vectors.lastUpsertChunks[0].SourceType != doc.SourceType {
+		t.Fatalf("SourceType = %q, want %q", vectors.lastUpsertChunks[0].SourceType, doc.SourceType)
+	}
+	if vectors.lastUpsertChunks[0].Title != doc.Title {
+		t.Fatalf("Title = %q, want %q", vectors.lastUpsertChunks[0].Title, doc.Title)
 	}
 }
 

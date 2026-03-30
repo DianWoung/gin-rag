@@ -169,6 +169,37 @@ go run ./cmd/evalctl run-trace <trace_id>
 
 并一次性输出 `sample_id`、`replay`、原始 `results` 和按 `captured/replay` 聚合后的 `summary`。
 
+## 本地 Smoke Test
+
+如果你想把“启动服务 -> 建库 -> 导文档 -> 提问 -> 反查 Phoenix trace -> `run-trace` 回放打分”一次串起来，可以直接跑：
+
+```bash
+OPENAI_API_KEY=sk-xxxx \
+ADMIN_API_KEY=change-me \
+bash ./scripts/smoke_phoenix.sh
+```
+
+这个脚本会默认：
+
+- 使用 `docker compose -f docker-compose.yml -f docker-compose.phoenix.yml up -d --build`
+- 等待 `app` 和 `phoenix` 就绪
+- 创建临时知识库和文档
+- 发起一次带唯一 token 的问答
+- 从 `/api/debug/phoenix/spans` 里按问题内容反查最新 trace id
+- 调用 `go run ./cmd/evalctl run-trace <trace_id>`
+- 输出最终 JSON，包括 `trace_id`、`sample_id`、回答内容和评测结果
+
+常用覆盖项：
+
+- `APP_BASE_URL`: 默认 `http://127.0.0.1:8080`
+- `PHOENIX_BASE_URL`: 默认 `http://127.0.0.1:6006`
+- `PHOENIX_PROJECT_NAME`: 默认 `go-rag`
+- `MYSQL_DSN`: 默认 `rag:rag@tcp(127.0.0.1:3306)/go_rag?...`
+- `SMOKE_AUTO_START_STACK=0`: 跳过 compose 启动，直接打现有本地服务
+- `SMOKE_KEEP_RESOURCES=1`: 运行后保留知识库和文档，方便手工检查
+
+脚本依赖本机有 `jq`、`curl`、`docker compose` 和可用的 `OPENAI_API_KEY`。
+
 ## 启动
 
 ### 本地
@@ -374,6 +405,7 @@ curl 'http://localhost:8080/api/documents?knowledge_base_id=1' \
 - `stream=false` 返回标准 JSON
 - `stream=true` 返回 `text/event-stream`，以 OpenAI chat completions SSE 风格输出 `data: {...}` chunk，最后 `data: [DONE]`
 - 额外支持 `knowledge_base_id` 或 `knowledge_base_name` 选择检索范围
+- 额外支持 `document_ids` 与 `source_types` 做检索过滤，用于把召回范围收敛到指定文档或文档类型
 
 示例：
 
@@ -383,12 +415,21 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -d '{
     "model": "gpt-4o-mini",
     "knowledge_base_id": 1,
+    "source_types": ["text"],
     "temperature": 0.2,
     "stream": false,
     "messages": [
       {"role": "user", "content": "RAG 是什么？"}
     ]
   }'
+```
+
+如果你只想在一批指定文档内检索，也可以传：
+
+```json
+{
+  "document_ids": [12, 15, 18]
+}
 ```
 
 流式示例：

@@ -309,6 +309,8 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (d
 			PointID:    pointID,
 			DocumentID: doc.ID,
 			ChunkIndex: idx,
+			Title:      doc.Title,
+			SourceType: doc.SourceType,
 			Content:    content,
 			Vector:     vectors[idx],
 		})

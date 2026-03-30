@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/dianwang-mac/go-rag/internal/observability"
@@ -14,6 +15,8 @@ type ChunkVector struct {
 	PointID    string
 	DocumentID uint
 	ChunkIndex int
+	Title      string
+	SourceType string
 	Content    string
 	Vector     []float64
 }
@@ -22,8 +25,15 @@ type SearchResult struct {
 	PointID    string
 	DocumentID uint
 	ChunkIndex int
+	Title      string
+	SourceType string
 	Content    string
 	Score      float32
+}
+
+type SearchFilter struct {
+	DocumentIDs []uint
+	SourceTypes []string
 }
 
 type QdrantStore struct {
@@ -116,6 +126,8 @@ func (s *QdrantStore) UpsertChunks(ctx context.Context, collectionName string, c
 			Payload: qdrant.NewValueMap(map[string]any{
 				"document_id": int64(chunk.DocumentID),
 				"chunk_index": int64(chunk.ChunkIndex),
+				"title":       chunk.Title,
+				"source_type": chunk.SourceType,
 				"content":     chunk.Content,
 			}),
 		})
@@ -139,7 +151,7 @@ func (s *QdrantStore) UpsertChunks(ctx context.Context, collectionName string, c
 	return nil
 }
 
-func (s *QdrantStore) Search(ctx context.Context, collectionName string, vector []float64, limit uint64) ([]SearchResult, error) {
+func (s *QdrantStore) Search(ctx context.Context, collectionName string, vector []float64, limit uint64, filter SearchFilter) ([]SearchResult, error) {
 	ctx, span := observability.StartSpan(
 		ctx,
 		observability.SpanQdrantSearch,
@@ -157,6 +169,7 @@ func (s *QdrantStore) Search(ctx context.Context, collectionName string, vector 
 	resp, err := s.client.Query(ctx, &qdrant.QueryPoints{
 		CollectionName: collectionName,
 		Query:          qdrant.NewQuery(toFloat32s(vector)...),
+		Filter:         buildSearchFilter(filter),
 		WithPayload:    qdrant.NewWithPayload(true),
 		Limit:          &limit,
 	})
@@ -175,6 +188,8 @@ func (s *QdrantStore) Search(ctx context.Context, collectionName string, vector 
 			PointID:    point.GetId().GetUuid(),
 			DocumentID: uint(point.GetPayload()["document_id"].GetIntegerValue()),
 			ChunkIndex: int(point.GetPayload()["chunk_index"].GetIntegerValue()),
+			Title:      point.GetPayload()["title"].GetStringValue(),
+			SourceType: point.GetPayload()["source_type"].GetStringValue(),
 			Content:    content,
 			Score:      point.GetScore(),
 		})
@@ -247,4 +262,57 @@ func toFloat32s(values []float64) []float32 {
 	}
 
 	return result
+}
+
+func buildSearchFilter(filter SearchFilter) *qdrant.Filter {
+	conditions := make([]*qdrant.Condition, 0, 2)
+
+	if ids := normalizedDocumentIDs(filter.DocumentIDs); len(ids) > 0 {
+		conditions = append(conditions, qdrant.NewMatchInts("document_id", ids...))
+	}
+	if sourceTypes := normalizedSourceTypes(filter.SourceTypes); len(sourceTypes) > 0 {
+		conditions = append(conditions, qdrant.NewMatchKeywords("source_type", sourceTypes...))
+	}
+	if len(conditions) == 0 {
+		return nil
+	}
+
+	return &qdrant.Filter{Must: conditions}
+}
+
+func normalizedDocumentIDs(ids []uint) []int64 {
+	set := make(map[uint]struct{}, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		set[id] = struct{}{}
+	}
+
+	normalized := make([]int64, 0, len(set))
+	for id := range set {
+		normalized = append(normalized, int64(id))
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i] < normalized[j]
+	})
+	return normalized
+}
+
+func normalizedSourceTypes(values []string) []string {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		set[value] = struct{}{}
+	}
+
+	normalized := make([]string, 0, len(set))
+	for value := range set {
+		normalized = append(normalized, value)
+	}
+	sort.Strings(normalized)
+	return normalized
 }

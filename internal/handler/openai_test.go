@@ -159,6 +159,8 @@ func TestChatCompletionsMapsRequestAndResponse(t *testing.T) {
 	body := map[string]any{
 		"model":             "gpt-4o-mini",
 		"knowledge_base_id": 99,
+		"document_ids":      []uint{7, 8},
+		"source_types":      []string{"policy", "faq"},
 		"temperature":       0.2,
 		"messages": []map[string]string{
 			{"role": "system", "content": "be precise"},
@@ -179,6 +181,12 @@ func TestChatCompletionsMapsRequestAndResponse(t *testing.T) {
 
 	if service.req.KnowledgeBaseID != 99 {
 		t.Fatalf("KnowledgeBaseID = %d, want 99", service.req.KnowledgeBaseID)
+	}
+	if got := service.req.DocumentIDs; len(got) != 2 || got[0] != 7 || got[1] != 8 {
+		t.Fatalf("DocumentIDs = %#v, want [7 8]", got)
+	}
+	if got := service.req.SourceTypes; len(got) != 2 || got[0] != "policy" || got[1] != "faq" {
+		t.Fatalf("SourceTypes = %#v, want [policy faq]", got)
 	}
 	if service.req.Model != "gpt-4o-mini" {
 		t.Fatalf("Model = %q, want gpt-4o-mini", service.req.Model)

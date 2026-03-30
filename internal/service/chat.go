@@ -9,8 +9,10 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 
+	einoembedding "github.com/cloudwego/eino/components/embedding"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -31,10 +33,20 @@ const (
 	rerankFetchK  = 20 // broader recall when reranker is available
 )
 
+type chatVectorStore interface {
+	Search(ctx context.Context, collectionName string, vector []float64, limit uint64, filter store.SearchFilter) ([]store.SearchResult, error)
+}
+
+type chatProvider interface {
+	DefaultChatModel() string
+	NewChatModel(ctx context.Context, modelName string, temperature float32) (einomodel.BaseChatModel, error)
+	NewEmbedder(ctx context.Context, modelName string) (einoembedding.Embedder, error)
+}
+
 type ChatService struct {
 	db       *gorm.DB
-	vectors  *store.QdrantStore
-	provider *llm.Provider
+	vectors  chatVectorStore
+	provider chatProvider
 	reranker *rerank.Reranker // nil when reranking is disabled
 }
 
@@ -43,6 +55,8 @@ type ragInput struct {
 	History        []*schema.Message
 	CollectionName string
 	EmbeddingModel string
+	DocumentIDs    []uint
+	SourceTypes    []string
 }
 
 func NewChatService(db *gorm.DB, vectors *store.QdrantStore, provider *llm.Provider, reranker *rerank.Reranker) *ChatService {
@@ -96,6 +110,8 @@ func (s *ChatService) ChatCompletion(ctx context.Context, req appdto.ChatRequest
 		History:        history,
 		CollectionName: kb.CollectionName,
 		EmbeddingModel: kb.EmbeddingModel,
+		DocumentIDs:    req.DocumentIDs,
+		SourceTypes:    req.SourceTypes,
 	})
 	if err != nil {
 		return appdto.ChatResult{}, fmt.Errorf("invoke rag chain: %w", err)
@@ -164,6 +180,8 @@ func (s *ChatService) ChatCompletionStream(ctx context.Context, req appdto.ChatR
 		History:        history,
 		CollectionName: kb.CollectionName,
 		EmbeddingModel: kb.EmbeddingModel,
+		DocumentIDs:    req.DocumentIDs,
+		SourceTypes:    req.SourceTypes,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("stream rag chain: %w", err)
@@ -528,7 +546,10 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 			fetchK = rerankFetchK
 		}
 
-		matches, err := s.vectors.Search(ctx, in.CollectionName, vectors[0], fetchK)
+		matches, err := s.vectors.Search(ctx, in.CollectionName, vectors[0], fetchK, store.SearchFilter{
+			DocumentIDs: in.DocumentIDs,
+			SourceTypes: in.SourceTypes,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -541,6 +562,7 @@ func (s *ChatService) buildRAGRunner(ctx context.Context, kb *entity.KnowledgeBa
 			}
 			reranked = true
 		}
+		matches = sortMatchesForPrompt(matches)
 
 		logRetrieval(in.Question, retrievalQuery, matches, reranked)
 
@@ -677,4 +699,21 @@ func matchContents(matches []store.SearchResult) []string {
 	}
 
 	return contents
+}
+
+func sortMatchesForPrompt(matches []store.SearchResult) []store.SearchResult {
+	sorted := append([]store.SearchResult(nil), matches...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Score != sorted[j].Score {
+			return sorted[i].Score > sorted[j].Score
+		}
+		if sorted[i].DocumentID != sorted[j].DocumentID {
+			return sorted[i].DocumentID < sorted[j].DocumentID
+		}
+		if sorted[i].ChunkIndex != sorted[j].ChunkIndex {
+			return sorted[i].ChunkIndex < sorted[j].ChunkIndex
+		}
+		return sorted[i].PointID < sorted[j].PointID
+	})
+	return sorted
 }
