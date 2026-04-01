@@ -3,6 +3,7 @@ package eval
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -82,4 +83,81 @@ func (r *Repository) SaveEvaluationResults(results []EvaluationResult) error {
 	}
 
 	return nil
+}
+
+func (r *Repository) GetSamples(sampleIDs []string) (map[string]StoredSample, error) {
+	sampleIDs = normalizeIDs(sampleIDs)
+	if len(sampleIDs) == 0 {
+		return map[string]StoredSample{}, nil
+	}
+
+	var records []SampleRecord
+	if err := r.db.Where("sample_id IN ?", sampleIDs).Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("get samples: %w", err)
+	}
+
+	result := make(map[string]StoredSample, len(records))
+	for _, record := range records {
+		stored, err := record.ToStoredSample()
+		if err != nil {
+			return nil, fmt.Errorf("decode sample %s: %w", record.SampleID, err)
+		}
+		result[record.SampleID] = stored
+	}
+	return result, nil
+}
+
+// GetLatestEvaluationResults returns the latest result per (sample, target, metric).
+func (r *Repository) GetLatestEvaluationResults(sampleIDs []string) ([]EvaluationResult, error) {
+	sampleIDs = normalizeIDs(sampleIDs)
+	if len(sampleIDs) == 0 {
+		return nil, nil
+	}
+
+	var records []EvaluationResultRecord
+	if err := r.db.
+		Where("sample_id IN ?", sampleIDs).
+		Order("created_at desc").
+		Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("get evaluation results: %w", err)
+	}
+
+	seen := make(map[string]struct{}, len(records))
+	results := make([]EvaluationResult, 0, len(records))
+	for _, record := range records {
+		key := strings.Join([]string{record.SampleID, record.Target, record.Metric}, "|")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		results = append(results, EvaluationResult{
+			EvaluationResultID: record.EvaluationResultID,
+			SampleID:           record.SampleID,
+			ReplayRunID:        record.ReplayRunID,
+			Target:             record.Target,
+			Metric:             record.Metric,
+			Status:             record.Status,
+			Score:              record.Score,
+			Summary:            record.Summary,
+			CreatedAt:          record.CreatedAt,
+		})
+	}
+	return results, nil
+}
+
+func normalizeIDs(ids []string) []string {
+	set := map[string]struct{}{}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := set[id]; ok {
+			continue
+		}
+		set[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }

@@ -169,6 +169,23 @@ go run ./cmd/evalctl run-trace <trace_id>
 
 并一次性输出 `sample_id`、`replay`、原始 `results` 和按 `captured/replay` 聚合后的 `summary`。
 
+### 5. 比较一组样本（用于 chunk 策略 A/B）
+
+当你固定了一批 PDF 问答样本，想比较不同 chunk 参数的效果时，可以把这批样本的 `sample_id` 一次汇总：
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+go run ./cmd/evalctl compare-samples <sample_id_1> <sample_id_2> <sample_id_3>
+```
+
+`compare-samples` 会输出：
+
+- 每个样本的 `question / original_query / rewritten_query / chunk_count`
+- 每个样本在 `captured/replay` 上的关键指标（当前聚焦：`retrieval_precision_at_k`、`grounded_answer`）
+- 跨样本均值（按 `target + metric` 聚合）
+
+这样你可以只改一个参数（例如 `CHUNK_SIZE` 或 `CHUNK_OVERLAP`），再对比同一批样本的均值变化，避免只看单条 case。
+
 ## 本地 Smoke Test
 
 如果你想把“启动服务 -> 建库 -> 导文档 -> 提问 -> 反查 Phoenix trace -> `run-trace` 回放打分”一次串起来，可以直接跑：
