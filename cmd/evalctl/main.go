@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -27,7 +28,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: evalctl <export-trace <trace_id> | replay-sample <sample_id> | score-sample <sample_id> | run-trace <trace_id> | compare-samples <sample_id...>>")
+		return fmt.Errorf("usage: evalctl <export-trace <trace_id> | replay-sample <sample_id> | score-sample <sample_id> | run-trace <trace_id> | compare-samples <sample_id...> | annotate-sample <sample_id> --reviewer <name> --retrieval <0-1> --grounded <0-1> --citation <0-1> --abstention <0-1>>")
 	}
 
 	switch args[0] {
@@ -57,25 +58,30 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("compare-samples requires at least one sample id")
 		}
 		return compareSamples(sampleIDs, stdout)
+	case "annotate-sample":
+		return annotateSample(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
 type comparisonPayload struct {
-	SampleIDs    []string              `json:"sample_ids"`
-	FocusMetrics []string              `json:"focus_metrics"`
-	BySample     []sampleComparison    `json:"by_sample"`
-	Aggregate    []aggregateComparison `json:"aggregate"`
+	SampleIDs       []string              `json:"sample_ids"`
+	FocusMetrics    []string              `json:"focus_metrics"`
+	BySample        []sampleComparison    `json:"by_sample"`
+	Aggregate       []aggregateComparison `json:"aggregate"`
+	ManualAggregate manualAggregate       `json:"manual_aggregate"`
 }
 
 type sampleComparison struct {
-	SampleID       string                              `json:"sample_id"`
-	Question       string                              `json:"question"`
-	OriginalQuery  string                              `json:"original_query,omitempty"`
-	RewrittenQuery string                              `json:"rewritten_query,omitempty"`
-	ChunkCount     int                                 `json:"chunk_count"`
-	Scores         map[string]map[string]metricOutcome `json:"scores"`
+	SampleID          string                              `json:"sample_id"`
+	Question          string                              `json:"question"`
+	OriginalQuery     string                              `json:"original_query,omitempty"`
+	RewrittenQuery    string                              `json:"rewritten_query,omitempty"`
+	ChunkCount        int                                 `json:"chunk_count"`
+	Scores            map[string]map[string]metricOutcome `json:"scores"`
+	ManualCount       int                                 `json:"manual_count"`
+	ManualMetricScore map[string]float64                  `json:"manual_metric_scores,omitempty"`
 }
 
 type metricOutcome struct {
@@ -89,6 +95,16 @@ type aggregateComparison struct {
 	Metric       string  `json:"metric"`
 	Count        int     `json:"count"`
 	AverageScore float64 `json:"average_score"`
+}
+
+type manualAggregate struct {
+	AnnotationCount int                `json:"annotation_count"`
+	MetricScores    map[string]float64 `json:"metric_scores,omitempty"`
+}
+
+type metricAgg struct {
+	count int
+	total float64
 }
 
 var focusMetrics = []string{"retrieval_precision_at_k", "grounded_answer"}
@@ -307,8 +323,12 @@ func compareSamples(sampleIDs []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	annotations, err := repo.ListManualAnnotations(sampleIDs)
+	if err != nil {
+		return err
+	}
 
-	payload := buildComparisonPayload(sampleIDs, samples, results, focusMetrics)
+	payload := buildComparisonPayload(sampleIDs, samples, results, annotations, focusMetrics)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(payload)
@@ -318,6 +338,7 @@ func buildComparisonPayload(
 	sampleIDs []string,
 	samples map[string]eval.StoredSample,
 	results []eval.EvaluationResult,
+	annotations []eval.ManualAnnotation,
 	metrics []string,
 ) comparisonPayload {
 	metricSet := make(map[string]struct{}, len(metrics))
@@ -330,22 +351,19 @@ func buildComparisonPayload(
 	for _, sampleID := range sampleIDs {
 		stored := samples[sampleID]
 		item := sampleComparison{
-			SampleID:       sampleID,
-			Question:       stored.Sample.Question,
-			OriginalQuery:  stored.Sample.OriginalQuery,
-			RewrittenQuery: stored.Sample.RewrittenQuery,
-			ChunkCount:     len(stored.Sample.Chunks),
-			Scores:         map[string]map[string]metricOutcome{},
+			SampleID:          sampleID,
+			Question:          stored.Sample.Question,
+			OriginalQuery:     stored.Sample.OriginalQuery,
+			RewrittenQuery:    stored.Sample.RewrittenQuery,
+			ChunkCount:        len(stored.Sample.Chunks),
+			Scores:            map[string]map[string]metricOutcome{},
+			ManualMetricScore: map[string]float64{},
 		}
 		bySample = append(bySample, item)
 		byID[sampleID] = &bySample[len(bySample)-1]
 	}
 
-	type agg struct {
-		total float64
-		count int
-	}
-	aggMap := map[string]*agg{}
+	aggMap := map[string]*metricAgg{}
 	for _, result := range results {
 		if _, ok := metricSet[result.Metric]; !ok {
 			continue
@@ -368,7 +386,7 @@ func buildComparisonPayload(
 		}
 		key := result.Target + "|" + result.Metric
 		if _, ok := aggMap[key]; !ok {
-			aggMap[key] = &agg{}
+			aggMap[key] = &metricAgg{}
 		}
 		aggMap[key].total += result.Score
 		aggMap[key].count++
@@ -403,12 +421,77 @@ func buildComparisonPayload(
 		return aggregate[i].Target < aggregate[j].Target
 	})
 
+	manual := buildManualAggregate(byID, annotations)
+
 	return comparisonPayload{
-		SampleIDs:    sampleIDs,
-		FocusMetrics: metrics,
-		BySample:     bySample,
-		Aggregate:    aggregate,
+		SampleIDs:       sampleIDs,
+		FocusMetrics:    metrics,
+		BySample:        bySample,
+		Aggregate:       aggregate,
+		ManualAggregate: manual,
 	}
+}
+
+func buildManualAggregate(byID map[string]*sampleComparison, annotations []eval.ManualAnnotation) manualAggregate {
+	sampleMetricAgg := map[string]map[string]*metricAgg{}
+	globalMetricAgg := map[string]*metricAgg{}
+	annotationCount := 0
+
+	for _, annotation := range annotations {
+		sample, ok := byID[annotation.SampleID]
+		if !ok {
+			continue
+		}
+		annotationCount++
+		sample.ManualCount++
+		if _, ok := sampleMetricAgg[annotation.SampleID]; !ok {
+			sampleMetricAgg[annotation.SampleID] = map[string]*metricAgg{}
+		}
+
+		addMetric(sampleMetricAgg[annotation.SampleID], "retrieval_relevance", annotation.RetrievalRelevance)
+		addMetric(sampleMetricAgg[annotation.SampleID], "grounded_answer", annotation.GroundedAnswer)
+		addMetric(sampleMetricAgg[annotation.SampleID], "citation_correctness", annotation.CitationCorrectness)
+		addMetric(sampleMetricAgg[annotation.SampleID], "abstention_quality", annotation.AbstentionQuality)
+
+		addMetric(globalMetricAgg, "retrieval_relevance", annotation.RetrievalRelevance)
+		addMetric(globalMetricAgg, "grounded_answer", annotation.GroundedAnswer)
+		addMetric(globalMetricAgg, "citation_correctness", annotation.CitationCorrectness)
+		addMetric(globalMetricAgg, "abstention_quality", annotation.AbstentionQuality)
+	}
+
+	for sampleID, metricAgg := range sampleMetricAgg {
+		sample := byID[sampleID]
+		for metric, entry := range metricAgg {
+			sample.ManualMetricScore[metric] = safeAverage(entry.total, entry.count)
+		}
+	}
+
+	manualScores := map[string]float64{}
+	for metric, entry := range globalMetricAgg {
+		manualScores[metric] = safeAverage(entry.total, entry.count)
+	}
+
+	return manualAggregate{
+		AnnotationCount: annotationCount,
+		MetricScores:    manualScores,
+	}
+}
+
+func addMetric(container map[string]*metricAgg, metric string, value float64) {
+	entry, ok := container[metric]
+	if !ok {
+		entry = &metricAgg{}
+		container[metric] = entry
+	}
+	entry.total += value
+	entry.count++
+}
+
+func safeAverage(total float64, count int) float64 {
+	if count == 0 {
+		return 0
+	}
+	return total / float64(count)
 }
 
 func parseSampleIDs(args []string) []string {
@@ -428,6 +511,86 @@ func parseSampleIDs(args []string) []string {
 		}
 	}
 	return ids
+}
+
+func annotateSample(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("annotate-sample requires a sample id")
+	}
+	sampleID := strings.TrimSpace(args[0])
+
+	flagSet := flag.NewFlagSet("annotate-sample", flag.ContinueOnError)
+	flagSet.SetOutput(stderr)
+	var reviewer string
+	var retrieval float64
+	var grounded float64
+	var citation float64
+	var abstention float64
+	var notes string
+	flagSet.StringVar(&reviewer, "reviewer", "", "reviewer name")
+	flagSet.Float64Var(&retrieval, "retrieval", -1, "retrieval relevance score [0,1]")
+	flagSet.Float64Var(&grounded, "grounded", -1, "grounded answer score [0,1]")
+	flagSet.Float64Var(&citation, "citation", -1, "citation correctness score [0,1]")
+	flagSet.Float64Var(&abstention, "abstention", -1, "abstention quality score [0,1]")
+	flagSet.StringVar(&notes, "notes", "", "annotation notes")
+	if err := flagSet.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	reviewer = strings.TrimSpace(reviewer)
+	if reviewer == "" {
+		return fmt.Errorf("annotate-sample requires --reviewer")
+	}
+	if err := validateScore("retrieval", retrieval); err != nil {
+		return err
+	}
+	if err := validateScore("grounded", grounded); err != nil {
+		return err
+	}
+	if err := validateScore("citation", citation); err != nil {
+		return err
+	}
+	if err := validateScore("abstention", abstention); err != nil {
+		return err
+	}
+
+	db, err := openEvalDB()
+	if err != nil {
+		return err
+	}
+	repo := eval.NewRepository(db)
+	if _, err := repo.GetSample(sampleID); err != nil {
+		return fmt.Errorf("sample %s not found: %w", sampleID, err)
+	}
+
+	annotation, err := repo.SaveManualAnnotation(eval.ManualAnnotation{
+		SampleID:            sampleID,
+		Reviewer:            reviewer,
+		RetrievalRelevance:  retrieval,
+		GroundedAnswer:      grounded,
+		CitationCorrectness: citation,
+		AbstentionQuality:   abstention,
+		Notes:               strings.TrimSpace(notes),
+	})
+	if err != nil {
+		return err
+	}
+
+	payload := struct {
+		Annotation eval.ManualAnnotation `json:"annotation"`
+	}{
+		Annotation: annotation,
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(payload)
+}
+
+func validateScore(name string, score float64) error {
+	if score < 0 || score > 1 {
+		return fmt.Errorf("--%s must be within [0,1]", name)
+	}
+	return nil
 }
 
 func openEvalDB() (*gorm.DB, error) {

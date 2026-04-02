@@ -186,6 +186,26 @@ go run ./cmd/evalctl compare-samples <sample_id_1> <sample_id_2> <sample_id_3>
 
 这样你可以只改一个参数（例如 `CHUNK_SIZE` 或 `CHUNK_OVERLAP`），再对比同一批样本的均值变化，避免只看单条 case。
 
+### 6. 人工标注（轻量流程）
+
+当你需要把自动分和人工判断对齐时，可以给样本打人工分（0~1）：
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+go run ./cmd/evalctl annotate-sample <sample_id> \
+  --reviewer 'alice' \
+  --retrieval 0.8 \
+  --grounded 0.7 \
+  --citation 1.0 \
+  --abstention 1.0 \
+  --notes 'chunk 边界略粗，答案基本有据'
+```
+
+之后再次执行 `compare-samples`，输出会自动包含：
+
+- 每个样本的人工标注数量和人工均分（四个维度）
+- 当前样本集合的人工总均分（`manual_aggregate`）
+
 ## 本地 Smoke Test
 
 如果你想把“启动服务 -> 建库 -> 导文档 -> 提问 -> 反查 Phoenix trace -> `run-trace` 回放打分”一次串起来，可以直接跑：

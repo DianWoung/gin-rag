@@ -85,6 +85,35 @@ func (r *Repository) SaveEvaluationResults(results []EvaluationResult) error {
 	return nil
 }
 
+func (r *Repository) SaveManualAnnotation(annotation ManualAnnotation) (ManualAnnotation, error) {
+	record := NewManualAnnotationRecord(annotation)
+	if err := r.db.Create(&record).Error; err != nil {
+		return ManualAnnotation{}, fmt.Errorf("create manual annotation: %w", err)
+	}
+
+	return record.ToManualAnnotation(), nil
+}
+
+func (r *Repository) ListManualAnnotations(sampleIDs []string) ([]ManualAnnotation, error) {
+	sampleIDs = normalizeIDs(sampleIDs)
+
+	query := r.db.Model(&ManualAnnotationRecord{})
+	if len(sampleIDs) > 0 {
+		query = query.Where("sample_id IN ?", sampleIDs)
+	}
+
+	var records []ManualAnnotationRecord
+	if err := query.Order("created_at desc").Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("list manual annotations: %w", err)
+	}
+
+	annotations := make([]ManualAnnotation, 0, len(records))
+	for _, record := range records {
+		annotations = append(annotations, record.ToManualAnnotation())
+	}
+	return annotations, nil
+}
+
 func (r *Repository) GetSamples(sampleIDs []string) (map[string]StoredSample, error) {
 	sampleIDs = normalizeIDs(sampleIDs)
 	if len(sampleIDs) == 0 {

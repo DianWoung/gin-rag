@@ -3,8 +3,8 @@ package store
 import (
 	"fmt"
 
-	"github.com/dianwang-mac/go-rag/internal/eval"
 	"github.com/dianwang-mac/go-rag/internal/entity"
+	"github.com/dianwang-mac/go-rag/internal/eval"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -22,6 +22,7 @@ func OpenMySQL(dsn string) (*gorm.DB, error) {
 		&eval.SampleRecord{},
 		&eval.ReplayRunRecord{},
 		&eval.EvaluationResultRecord{},
+		&eval.ManualAnnotationRecord{},
 	); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}

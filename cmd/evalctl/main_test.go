@@ -64,3 +64,16 @@ func TestEvalctlCompareSamplesRequiresSampleID(t *testing.T) {
 		t.Fatalf("error = %q", err)
 	}
 }
+
+func TestEvalctlAnnotateSampleRequiresSampleID(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := run([]string{"annotate-sample"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run() error = nil, want missing sample id error")
+	}
+	if !strings.Contains(err.Error(), "requires a sample id") {
+		t.Fatalf("error = %q", err)
+	}
+}

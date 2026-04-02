@@ -56,6 +56,18 @@ type EvaluationResultRecord struct {
 	CreatedAt          time.Time
 }
 
+type ManualAnnotationRecord struct {
+	ManualAnnotationID  string  `gorm:"primaryKey;size:36"`
+	SampleID            string  `gorm:"index;size:36;not null"`
+	Reviewer            string  `gorm:"size:128;not null"`
+	RetrievalRelevance  float64 `gorm:"not null;default:0"`
+	GroundedAnswer      float64 `gorm:"not null;default:0"`
+	CitationCorrectness float64 `gorm:"not null;default:0"`
+	AbstentionQuality   float64 `gorm:"not null;default:0"`
+	Notes               string  `gorm:"type:text"`
+	CreatedAt           time.Time
+}
+
 type StoredSample struct {
 	SampleID  string
 	Sample    tracebridge.ChatSample
@@ -85,6 +97,18 @@ type EvaluationResult struct {
 	Score              float64
 	Summary            string
 	CreatedAt          time.Time
+}
+
+type ManualAnnotation struct {
+	ManualAnnotationID  string
+	SampleID            string
+	Reviewer            string
+	RetrievalRelevance  float64
+	GroundedAnswer      float64
+	CitationCorrectness float64
+	AbstentionQuality   float64
+	Notes               string
+	CreatedAt           time.Time
 }
 
 func NewSampleRecord(sample tracebridge.ChatSample, warnings []tracebridge.ExportWarning) (SampleRecord, error) {
@@ -211,5 +235,36 @@ func NewEvaluationResultRecord(result EvaluationResult) EvaluationResultRecord {
 		Status:             result.Status,
 		Score:              result.Score,
 		Summary:            result.Summary,
+	}
+}
+
+func NewManualAnnotationRecord(annotation ManualAnnotation) ManualAnnotationRecord {
+	if annotation.ManualAnnotationID == "" {
+		annotation.ManualAnnotationID = uuid.NewString()
+	}
+
+	return ManualAnnotationRecord{
+		ManualAnnotationID:  annotation.ManualAnnotationID,
+		SampleID:            annotation.SampleID,
+		Reviewer:            annotation.Reviewer,
+		RetrievalRelevance:  annotation.RetrievalRelevance,
+		GroundedAnswer:      annotation.GroundedAnswer,
+		CitationCorrectness: annotation.CitationCorrectness,
+		AbstentionQuality:   annotation.AbstentionQuality,
+		Notes:               annotation.Notes,
+	}
+}
+
+func (r ManualAnnotationRecord) ToManualAnnotation() ManualAnnotation {
+	return ManualAnnotation{
+		ManualAnnotationID:  r.ManualAnnotationID,
+		SampleID:            r.SampleID,
+		Reviewer:            r.Reviewer,
+		RetrievalRelevance:  r.RetrievalRelevance,
+		GroundedAnswer:      r.GroundedAnswer,
+		CitationCorrectness: r.CitationCorrectness,
+		AbstentionQuality:   r.AbstentionQuality,
+		Notes:               r.Notes,
+		CreatedAt:           r.CreatedAt,
 	}
 }
