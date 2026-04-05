@@ -1,0 +1,5 @@
+# One sample_id per line.
+# Use the same frozen sample set when comparing chunk strategies.
+#
+# Example:
+# 5cfa756d-c414-4f23-8fa5-76224d0893a8

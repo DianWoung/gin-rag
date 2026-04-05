@@ -1,0 +1,3 @@
+harness/baseline.json
+reports/*.json
+!reports/.gitkeep

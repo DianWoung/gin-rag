@@ -263,6 +263,50 @@ go run ./cmd/evalctl compare-samples <sample_id_1> <sample_id_2> <sample_id_3>
   - 自动分变化方向与人工一致
   - 若自动升高但人工下降，以人工为准回滚参数
 
+### 8. Harness 回归流程（批量门禁）
+
+`smoke_phoenix.sh` 负责验证链路可用；`eval_harness.sh` 负责批量评测与门禁判定。
+
+1. 准备样本集
+
+- 在 [eval/harness/sample_ids.txt](/Users/dianwang-mac/Documents/workspace/go-rag/eval/harness/sample_ids.txt) 填入固定 `sample_id`（每行一个）。
+- 也可以通过 `HARNESS_SAMPLE_IDS='id1,id2,id3'` 临时覆盖样本文件。
+
+2. 初始化 baseline（第一次或要重置基线时）
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+HARNESS_INIT_BASELINE=1 \
+bash ./scripts/eval_harness.sh
+```
+
+会生成基线文件：`eval/harness/baseline.json`。
+
+3. 日常回归执行
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+bash ./scripts/eval_harness.sh
+```
+
+会输出并落盘报告：`eval/reports/harness_YYYYMMDD_HHMMSS.json`。
+
+4. 默认失败条件（exit code 1）
+
+- `manual_present`: 要求有人工标注且可计算人工均分（`HARNESS_REQUIRE_MANUAL=1`）。
+- `unlabeled_ratio`: 未标注样本占比超过阈值（默认 `0.20`）。
+- `manual_grounded_drop`: 人工 `grounded_answer` 相比 baseline 下降超过阈值（默认 `0.03`）。
+- `manual_retrieval_drop`: 人工 `retrieval_relevance` 相比 baseline 下降超过阈值（默认 `0.03`）。
+- `direction_conflict_*`: 自动分上升但人工分下降（方向冲突）。
+
+5. 常用调参项
+
+- `HARNESS_MAX_UNLABELED_RATIO`（默认 `0.20`）
+- `HARNESS_GROUNDED_MAX_DROP`（默认 `0.03`）
+- `HARNESS_RETRIEVAL_MAX_DROP`（默认 `0.03`）
+- `HARNESS_BASELINE_FILE`（默认 `eval/harness/baseline.json`）
+- `HARNESS_REPORT_DIR`（默认 `eval/reports`）
+
 ## 本地 Smoke Test
 
 如果你想把“启动服务 -> 建库 -> 导文档 -> 提问 -> 反查 Phoenix trace -> `run-trace` 回放打分”一次串起来，可以直接跑：
