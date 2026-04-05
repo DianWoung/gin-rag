@@ -206,6 +206,63 @@ go run ./cmd/evalctl annotate-sample <sample_id> \
 - 每个样本的人工标注数量和人工均分（四个维度）
 - 当前样本集合的人工总均分（`manual_aggregate`）
 
+### 7. 人工标注 SOP 与验证方法
+
+建议把人工标注纳入固定回归流程，避免只看启发式自动分：
+
+1. 固定评测集
+
+- 先冻结一批 `sample_id`（建议 100~300 条），覆盖：
+  - 常见问答
+  - 长 PDF 跨段检索
+  - 无答案/应拒答
+- 这批样本在 chunk 策略对比期间保持不变。
+
+2. 标注执行
+
+- 每条样本至少 1 人标注；核心样本（建议 20%）做双人复标。
+- 四个人工维度统一按 `0~1` 评分：
+  - `retrieval`（检索相关性）
+  - `grounded`（答案有据性）
+  - `citation`（引用正确性）
+  - `abstention`（应拒答时是否正确拒答）
+- 命令示例：
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+go run ./cmd/evalctl annotate-sample <sample_id> \
+  --reviewer 'reviewer_a' \
+  --retrieval 0.8 --grounded 0.7 --citation 1 --abstention 1 \
+  --notes 'evidence mostly sufficient'
+```
+
+3. 标注一致性验证（人工质量）
+
+- 用同一批样本分别由 `reviewer_a` 与 `reviewer_b` 标注后，抽查 `manual_metric_scores` 差异。
+- 建议阈值：
+  - 单维平均分差值 `<= 0.15`：一致性可接受
+  - `> 0.15`：先统一口径再继续批量标注
+- 快速查看：
+
+```bash
+MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/go_rag?charset=utf8mb4&parseTime=True&loc=Local' \
+go run ./cmd/evalctl compare-samples <sample_id_1> <sample_id_2> <sample_id_3>
+```
+
+看输出中的 `manual_count`、`manual_metric_scores`、`manual_aggregate`。
+
+4. 自动分对齐验证（策略评估）
+
+- 每次只改一个 chunk 参数（例如 `CHUNK_SIZE` 或 `CHUNK_OVERLAP`）。
+- 对同一批样本执行：`run-trace/score-sample -> compare-samples`。
+- 至少同时观察：
+  - 自动：`retrieval_precision_at_k`、`grounded_answer`
+  - 人工：`manual_aggregate.grounded_answer`、`manual_aggregate.retrieval_relevance`
+- 推荐回归门槛（可按业务再调）：
+  - 人工均分不下降（或下降 < 0.03）
+  - 自动分变化方向与人工一致
+  - 若自动升高但人工下降，以人工为准回滚参数
+
 ## 本地 Smoke Test
 
 如果你想把“启动服务 -> 建库 -> 导文档 -> 提问 -> 反查 Phoenix trace -> `run-trace` 回放打分”一次串起来，可以直接跑：
