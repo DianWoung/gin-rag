@@ -46,8 +46,8 @@ func TestSplitParagraphBoundary(t *testing.T) {
 
 func TestSplitSentenceBoundaryEnglish(t *testing.T) {
 	// One paragraph with two sentences, each ~25 runes. chunkSize=30 forces split.
-	sent1 := "The quick brown fox jumps."  // 26 runes
-	sent2 := "The lazy dog sleeps today."  // 26 runes
+	sent1 := "The quick brown fox jumps." // 26 runes
+	sent2 := "The lazy dog sleeps today." // 26 runes
 	input := sent1 + " " + sent2
 
 	splitter := NewSplitter(30, 0)
@@ -64,9 +64,9 @@ func TestSplitSentenceBoundaryEnglish(t *testing.T) {
 
 func TestSplitSentenceBoundaryCJK(t *testing.T) {
 	// CJK sentences split on 。
-	sent1 := "这是第一句话。"   // 7 runes
-	sent2 := "这是第二句话。"   // 7 runes
-	sent3 := "这是第三句话。"   // 7 runes
+	sent1 := "这是第一句话。" // 7 runes
+	sent2 := "这是第二句话。" // 7 runes
+	sent3 := "这是第三句话。" // 7 runes
 	input := sent1 + sent2 + sent3
 
 	splitter := NewSplitter(16, 0)
@@ -88,9 +88,9 @@ func TestSplitSentenceBoundaryCJK(t *testing.T) {
 }
 
 func TestSplitOverlapContainsPreviousSegment(t *testing.T) {
-	sent1 := "First sentence here."   // 20 runes
-	sent2 := "Second sentence here."  // 21 runes
-	sent3 := "Third sentence here."   // 20 runes
+	sent1 := "First sentence here."  // 20 runes
+	sent2 := "Second sentence here." // 21 runes
+	sent3 := "Third sentence here."  // 20 runes
 	input := sent1 + " " + sent2 + " " + sent3
 
 	// chunkSize=25 fits one sentence per chunk, overlap=22 should carry over previous sentence.
@@ -132,6 +132,30 @@ func TestSplitFallbackToRuneForLongSentence(t *testing.T) {
 	for _, c := range chunks {
 		if runeLen(c) > 30 {
 			t.Fatalf("chunk exceeds chunkSize: %d runes", runeLen(c))
+		}
+	}
+}
+
+func TestSplitBlocksKeepsTableMetadata(t *testing.T) {
+	splitter := NewSplitter(40, 0)
+	blocks := []ContentBlock{
+		{
+			Type:    BlockTypeTable,
+			TableID: "table_1",
+			Content: "列1  列2\nA   1\nB   2\nC   3",
+		},
+	}
+
+	chunks := splitter.SplitBlocks(blocks)
+	if len(chunks) == 0 {
+		t.Fatal("len(chunks)=0, want >0")
+	}
+	for _, chunk := range chunks {
+		if chunk.Type != BlockTypeTable {
+			t.Fatalf("chunk.Type=%q, want %q", chunk.Type, BlockTypeTable)
+		}
+		if chunk.TableID != "table_1" {
+			t.Fatalf("chunk.TableID=%q, want table_1", chunk.TableID)
 		}
 	}
 }

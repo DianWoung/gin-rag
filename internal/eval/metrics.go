@@ -20,6 +20,7 @@ const (
 const (
 	retrievalPrecisionK             = 4
 	queryChunkRelevantOverlapCutoff = 0.1
+	tableCellCoverageCutoff         = 0.1
 )
 
 type ResultSummary struct {
@@ -88,6 +89,7 @@ func scoreTarget(sampleID, replayRunID, target, answer string, sample tracebridg
 	results := []EvaluationResult{
 		buildRewriteFidelity(sampleID, replayRunID, target, sample),
 		buildRetrievalPrecisionAtK(sampleID, replayRunID, target, sample),
+		buildTableCellAccuracy(sampleID, replayRunID, target, answer, sample),
 		buildRetrievalRelevance(sampleID, replayRunID, target, answer, sample),
 		buildGroundedAnswer(sampleID, replayRunID, target, answer, sample),
 		buildCitationCorrectness(sampleID, replayRunID, target, answer, sample),
@@ -134,6 +136,34 @@ func buildRetrievalPrecisionAtK(sampleID, replayRunID, target string, sample tra
 	}
 	score := float64(relevant) / float64(limit)
 	return newResult(sampleID, replayRunID, target, "retrieval_precision_at_k", StatusScored, score, fmt.Sprintf("%d/%d chunks above overlap %.2f", relevant, limit, queryChunkRelevantOverlapCutoff))
+}
+
+func buildTableCellAccuracy(sampleID, replayRunID, target, answer string, sample tracebridge.ChatSample) EvaluationResult {
+	if strings.TrimSpace(answer) == "" {
+		return newResult(sampleID, replayRunID, target, "table_cell_accuracy", StatusSkipped, 0, "answer is empty")
+	}
+
+	cells := extractTableCellTokens(sample.Chunks)
+	if len(cells) == 0 {
+		return newResult(sampleID, replayRunID, target, "table_cell_accuracy", StatusSkipped, 0, "no table-like chunks captured")
+	}
+
+	answerTokens := tokenSet(answer)
+	if len(answerTokens) == 0 {
+		return newResult(sampleID, replayRunID, target, "table_cell_accuracy", StatusSkipped, 0, "answer has no comparable tokens")
+	}
+
+	covered := 0
+	for token := range answerTokens {
+		if _, ok := cells[token]; ok {
+			covered++
+		}
+	}
+	score := float64(covered) / float64(len(answerTokens))
+	if score < tableCellCoverageCutoff {
+		return newResult(sampleID, replayRunID, target, "table_cell_accuracy", StatusScored, score, fmt.Sprintf("answer/cell overlap %.2f below cutoff %.2f", score, tableCellCoverageCutoff))
+	}
+	return newResult(sampleID, replayRunID, target, "table_cell_accuracy", StatusScored, score, fmt.Sprintf("answer/cell overlap %.2f", score))
 }
 
 func buildRetrievalRelevance(sampleID, replayRunID, target, answer string, sample tracebridge.ChatSample) EvaluationResult {
@@ -265,6 +295,81 @@ func parsePositiveInt(text string) int {
 		result = result*10 + int(r-'0')
 	}
 	return result
+}
+
+func extractTableCellTokens(chunks []tracebridge.RetrievedChunk) map[string]struct{} {
+	set := map[string]struct{}{}
+	for _, chunk := range chunks {
+		lines := splitNonEmptyLines(chunk.Content)
+		if !looksTableLike(lines) {
+			continue
+		}
+		for _, line := range lines {
+			for _, col := range splitTableColumns(line) {
+				for token := range tokenSet(col) {
+					set[token] = struct{}{}
+				}
+			}
+		}
+	}
+	return set
+}
+
+func looksTableLike(lines []string) bool {
+	if len(lines) < 2 {
+		return false
+	}
+	total := 0
+	valid := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		total++
+		if len(splitTableColumns(line)) >= 2 {
+			valid++
+		}
+	}
+	if total < 2 || valid < 2 {
+		return false
+	}
+	return float64(valid)/float64(total) >= 0.6
+}
+
+func splitTableColumns(line string) []string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	if strings.Contains(line, "|") {
+		raw := strings.Split(line, "|")
+		return trimNonEmpty(raw)
+	}
+	if strings.Contains(line, "\t") {
+		raw := strings.Split(line, "\t")
+		return trimNonEmpty(raw)
+	}
+	re := regexp.MustCompile(`\s{2,}`)
+	raw := re.Split(line, -1)
+	return trimNonEmpty(raw)
+}
+
+func splitNonEmptyLines(text string) []string {
+	raw := strings.Split(text, "\n")
+	return trimNonEmpty(raw)
+}
+
+func trimNonEmpty(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func firstNonEmpty(values ...string) string {

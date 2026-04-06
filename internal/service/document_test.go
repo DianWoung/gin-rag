@@ -146,6 +146,9 @@ func TestIndexDocumentMarksIndexedOnSuccess(t *testing.T) {
 	if vectors.lastUpsertChunks[0].Title != doc.Title {
 		t.Fatalf("Title = %q, want %q", vectors.lastUpsertChunks[0].Title, doc.Title)
 	}
+	if vectors.lastUpsertChunks[0].ChunkType != ingest.BlockTypeText {
+		t.Fatalf("ChunkType = %q, want %q", vectors.lastUpsertChunks[0].ChunkType, ingest.BlockTypeText)
+	}
 }
 
 func TestIndexDocumentAllowsRetryFromFailed(t *testing.T) {

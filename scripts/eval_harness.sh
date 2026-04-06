@@ -14,6 +14,7 @@ HARNESS_REQUIRE_MANUAL="${HARNESS_REQUIRE_MANUAL:-1}"
 HARNESS_MAX_UNLABELED_RATIO="${HARNESS_MAX_UNLABELED_RATIO:-0.20}"
 HARNESS_GROUNDED_MAX_DROP="${HARNESS_GROUNDED_MAX_DROP:-0.03}"
 HARNESS_RETRIEVAL_MAX_DROP="${HARNESS_RETRIEVAL_MAX_DROP:-0.03}"
+HARNESS_TABLE_CELL_MAX_DROP="${HARNESS_TABLE_CELL_MAX_DROP:-0.05}"
 
 if [[ -z "$MYSQL_DSN" ]]; then
   echo "MYSQL_DSN is required" >&2
@@ -43,6 +44,7 @@ Optional environment variables:
   HARNESS_MAX_UNLABELED_RATIO    default: 0.20
   HARNESS_GROUNDED_MAX_DROP      default: 0.03
   HARNESS_RETRIEVAL_MAX_DROP     default: 0.03
+  HARNESS_TABLE_CELL_MAX_DROP    default: 0.05
 EOF
 }
 
@@ -104,6 +106,9 @@ current_metrics="$(
       ),
       auto_captured_retrieval_precision_at_k: (
         [.aggregate[] | select(.target=="captured" and .metric=="retrieval_precision_at_k") | .average_score] | first // null
+      ),
+      auto_captured_table_cell_accuracy: (
+        [.aggregate[] | select(.target=="captured" and .metric=="table_cell_accuracy") | .average_score] | first // null
       )
     }
   ' <<<"$compare_output"
@@ -140,6 +145,7 @@ validation_report="$(
     --argjson max_unlabeled "$HARNESS_MAX_UNLABELED_RATIO" \
     --argjson max_grounded_drop "$HARNESS_GROUNDED_MAX_DROP" \
     --argjson max_retrieval_drop "$HARNESS_RETRIEVAL_MAX_DROP" \
+    --argjson max_table_cell_drop "$HARNESS_TABLE_CELL_MAX_DROP" \
     --arg require_manual "$HARNESS_REQUIRE_MANUAL" \
     '
       def drop($base; $cur):
@@ -151,8 +157,10 @@ validation_report="$(
       | (($require_manual == "0") or ($current.annotation_count > 0 and $current.manual_grounded_answer != null and $current.manual_retrieval_relevance != null)) as $ok_manual_present
       | (drop($baseline.manual_grounded_answer; $current.manual_grounded_answer)) as $drop_manual_grounded
       | (drop($baseline.manual_retrieval_relevance; $current.manual_retrieval_relevance)) as $drop_manual_retrieval
+      | (drop($baseline.auto_captured_table_cell_accuracy; $current.auto_captured_table_cell_accuracy)) as $drop_table_cell
       | (if $drop_manual_grounded == null then true else ($drop_manual_grounded <= $max_grounded_drop) end) as $ok_manual_grounded_drop
       | (if $drop_manual_retrieval == null then true else ($drop_manual_retrieval <= $max_retrieval_drop) end) as $ok_manual_retrieval_drop
+      | (if $drop_table_cell == null then true else ($drop_table_cell <= $max_table_cell_drop) end) as $ok_table_cell_drop
       | (
           $baseline.auto_captured_grounded_answer != null
           and $baseline.manual_grounded_answer != null
@@ -179,6 +187,7 @@ validation_report="$(
             failed("unlabeled_ratio"; $ok_unlabeled; ("ratio=" + (($current.unlabeled_ratio // 0)|tostring) + ", max=" + ($max_unlabeled|tostring))),
             failed("manual_grounded_drop"; $ok_manual_grounded_drop; ("drop=" + (($drop_manual_grounded // 0)|tostring) + ", max=" + ($max_grounded_drop|tostring))),
             failed("manual_retrieval_drop"; $ok_manual_retrieval_drop; ("drop=" + (($drop_manual_retrieval // 0)|tostring) + ", max=" + ($max_retrieval_drop|tostring))),
+            failed("table_cell_accuracy_drop"; $ok_table_cell_drop; ("drop=" + (($drop_table_cell // 0)|tostring) + ", max=" + ($max_table_cell_drop|tostring))),
             failed("direction_conflict_grounded"; ($direction_conflict_grounded | not); ("conflict=" + ($direction_conflict_grounded|tostring))),
             failed("direction_conflict_retrieval"; ($direction_conflict_retrieval | not); ("conflict=" + ($direction_conflict_retrieval|tostring)))
           ]

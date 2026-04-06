@@ -140,6 +140,7 @@ go run ./cmd/evalctl score-sample <sample_id>
 
 - `rewrite_fidelity`
 - `retrieval_precision_at_k`
+- `table_cell_accuracy`
 - `retrieval_relevance`
 - `grounded_answer`
 - `citation_correctness`
@@ -181,7 +182,7 @@ go run ./cmd/evalctl compare-samples <sample_id_1> <sample_id_2> <sample_id_3>
 `compare-samples` 会输出：
 
 - 每个样本的 `question / original_query / rewritten_query / chunk_count`
-- 每个样本在 `captured/replay` 上的关键指标（当前聚焦：`retrieval_precision_at_k`、`grounded_answer`）
+- 每个样本在 `captured/replay` 上的关键指标（当前聚焦：`retrieval_precision_at_k`、`grounded_answer`、`table_cell_accuracy`）
 - 跨样本均值（按 `target + metric` 聚合）
 
 这样你可以只改一个参数（例如 `CHUNK_SIZE` 或 `CHUNK_OVERLAP`），再对比同一批样本的均值变化，避免只看单条 case。
@@ -304,6 +305,7 @@ bash ./scripts/eval_harness.sh
 - `HARNESS_MAX_UNLABELED_RATIO`（默认 `0.20`）
 - `HARNESS_GROUNDED_MAX_DROP`（默认 `0.03`）
 - `HARNESS_RETRIEVAL_MAX_DROP`（默认 `0.03`）
+- `HARNESS_TABLE_CELL_MAX_DROP`（默认 `0.05`）
 - `HARNESS_BASELINE_FILE`（默认 `eval/harness/baseline.json`）
 - `HARNESS_REPORT_DIR`（默认 `eval/reports`）
 

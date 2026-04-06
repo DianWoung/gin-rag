@@ -15,6 +15,9 @@ type ChunkVector struct {
 	PointID    string
 	DocumentID uint
 	ChunkIndex int
+	ChunkType  string
+	TableID    string
+	PageNo     int
 	Title      string
 	SourceType string
 	Content    string
@@ -25,6 +28,9 @@ type SearchResult struct {
 	PointID    string
 	DocumentID uint
 	ChunkIndex int
+	ChunkType  string
+	TableID    string
+	PageNo     int
 	Title      string
 	SourceType string
 	Content    string
@@ -126,6 +132,9 @@ func (s *QdrantStore) UpsertChunks(ctx context.Context, collectionName string, c
 			Payload: qdrant.NewValueMap(map[string]any{
 				"document_id": int64(chunk.DocumentID),
 				"chunk_index": int64(chunk.ChunkIndex),
+				"chunk_type":  chunk.ChunkType,
+				"table_id":    chunk.TableID,
+				"page_no":     int64(chunk.PageNo),
 				"title":       chunk.Title,
 				"source_type": chunk.SourceType,
 				"content":     chunk.Content,
@@ -182,14 +191,18 @@ func (s *QdrantStore) Search(ctx context.Context, collectionName string, vector 
 	results := make([]SearchResult, 0, len(resp))
 	contents := make([]string, 0, len(resp))
 	for _, point := range resp {
-		content := point.GetPayload()["content"].GetStringValue()
+		payload := point.GetPayload()
+		content := payloadString(payload, "content")
 		contents = append(contents, content)
 		results = append(results, SearchResult{
 			PointID:    point.GetId().GetUuid(),
-			DocumentID: uint(point.GetPayload()["document_id"].GetIntegerValue()),
-			ChunkIndex: int(point.GetPayload()["chunk_index"].GetIntegerValue()),
-			Title:      point.GetPayload()["title"].GetStringValue(),
-			SourceType: point.GetPayload()["source_type"].GetStringValue(),
+			DocumentID: uint(payloadInt(payload, "document_id")),
+			ChunkIndex: int(payloadInt(payload, "chunk_index")),
+			ChunkType:  firstNonEmpty(payloadString(payload, "chunk_type"), "text"),
+			TableID:    payloadString(payload, "table_id"),
+			PageNo:     int(payloadInt(payload, "page_no")),
+			Title:      payloadString(payload, "title"),
+			SourceType: payloadString(payload, "source_type"),
 			Content:    content,
 			Score:      point.GetScore(),
 		})
@@ -315,4 +328,29 @@ func normalizedSourceTypes(values []string) []string {
 	}
 	sort.Strings(normalized)
 	return normalized
+}
+
+func payloadString(payload map[string]*qdrant.Value, key string) string {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return value.GetStringValue()
+}
+
+func payloadInt(payload map[string]*qdrant.Value, key string) int64 {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return 0
+	}
+	return value.GetIntegerValue()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -24,6 +24,7 @@ type DocumentService interface {
 	ImportPDFDocument(ctx context.Context, req appdto.ImportPDFDocumentRequest) (*entity.Document, error)
 	IndexDocument(ctx context.Context, documentID uint) (*entity.Document, error)
 	ListDocuments(ctx context.Context, knowledgeBaseID uint) ([]entity.Document, error)
+	ListDocumentChunks(ctx context.Context, documentID uint) ([]entity.DocumentChunk, error)
 	DeleteDocument(ctx context.Context, documentID uint) error
 }
 
@@ -125,6 +126,22 @@ func (h *InternalAPIHandler) ListDocuments(c *gin.Context) {
 	}
 
 	list, err := h.documents.ListDocuments(c.Request.Context(), uint(knowledgeBaseID))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": list})
+}
+
+func (h *InternalAPIHandler) ListDocumentChunks(c *gin.Context) {
+	documentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, badRequest("invalid document id"))
+		return
+	}
+
+	list, err := h.documents.ListDocumentChunks(c.Request.Context(), uint(documentID))
 	if err != nil {
 		writeError(c, err)
 		return

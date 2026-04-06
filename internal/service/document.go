@@ -237,10 +237,15 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (d
 	)
 
 	splitCtx, splitSpan := observability.StartSpan(ctx, observability.SpanDocumentSplit, attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceDocument))
-	chunks := s.splitter.Split(doc.Content)
+	blocks := ingest.BuildBlocks(doc.Content)
+	chunks := s.splitter.SplitBlocks(blocks)
+	chunkBodies := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		chunkBodies = append(chunkBodies, chunk.Content)
+	}
 	splitSpan.SetAttributes(
 		attribute.Int(observability.AttrChunkCount, len(chunks)),
-		observability.TextListAttribute(observability.AttrChunkBodies, chunks),
+		observability.TextListAttribute(observability.AttrChunkBodies, chunkBodies),
 	)
 	splitSpan.End()
 	if len(chunks) == 0 {
@@ -256,7 +261,7 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (d
 		return nil, err
 	}
 
-	vectors, err := embedder.EmbedStrings(embedCtx, chunks)
+	vectors, err := embedder.EmbedStrings(embedCtx, chunkBodies)
 	if err != nil {
 		err = fmt.Errorf("embed document chunks: %w", err)
 		observability.RecordError(embedSpan, err)
@@ -294,24 +299,30 @@ func (s *DocumentService) IndexDocument(ctx context.Context, documentID uint) (d
 	dbChunks := make([]entity.DocumentChunk, 0, len(chunks))
 	vectorChunks := make([]store.ChunkVector, 0, len(chunks))
 	pointIDs := make([]string, 0, len(chunks))
-	for idx, content := range chunks {
+	for idx, chunk := range chunks {
 		pointID := uuid.NewString()
 		pointIDs = append(pointIDs, pointID)
 		dbChunks = append(dbChunks, entity.DocumentChunk{
 			KnowledgeBaseID: kb.ID,
 			DocumentID:      doc.ID,
 			ChunkIndex:      idx,
-			Content:         content,
-			TokenCount:      estimateTokens(content),
+			ChunkType:       chunk.Type,
+			TableID:         chunk.TableID,
+			PageNo:          chunk.PageNo,
+			Content:         chunk.Content,
+			TokenCount:      estimateTokens(chunk.Content),
 			VectorPointID:   pointID,
 		})
 		vectorChunks = append(vectorChunks, store.ChunkVector{
 			PointID:    pointID,
 			DocumentID: doc.ID,
 			ChunkIndex: idx,
+			ChunkType:  chunk.Type,
+			TableID:    chunk.TableID,
+			PageNo:     chunk.PageNo,
 			Title:      doc.Title,
 			SourceType: doc.SourceType,
-			Content:    content,
+			Content:    chunk.Content,
 			Vector:     vectors[idx],
 		})
 	}
@@ -472,6 +483,45 @@ func (s *DocumentService) ListDocuments(ctx context.Context, knowledgeBaseID uin
 
 	if err = query.Find(&list).Error; err != nil {
 		err = fmt.Errorf("list documents: %w", err)
+		return nil, err
+	}
+
+	return list, nil
+}
+
+func (s *DocumentService) ListDocumentChunks(ctx context.Context, documentID uint) (list []entity.DocumentChunk, err error) {
+	ctx, span := observability.StartSpan(
+		ctx,
+		"service.document.list_chunks",
+		attribute.String(observability.AttrTraceRole, observability.TraceRoleServiceDocument),
+		attribute.Int(observability.AttrDocumentID, int(documentID)),
+	)
+	defer func() {
+		span.SetAttributes(attribute.Int("rag.list_count", len(list)))
+		observability.RecordError(span, err)
+		span.End()
+	}()
+
+	if documentID == 0 {
+		err = apperr.New(http.StatusBadRequest, fmt.Errorf("document id is required"))
+		return nil, err
+	}
+
+	var doc entity.Document
+	if err = s.db.WithContext(ctx).First(&doc, documentID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			err = apperr.New(http.StatusNotFound, fmt.Errorf("document not found"))
+			return nil, err
+		}
+		err = fmt.Errorf("find document: %w", err)
+		return nil, err
+	}
+
+	if err = s.db.WithContext(ctx).
+		Where("document_id = ?", documentID).
+		Order("chunk_index asc").
+		Find(&list).Error; err != nil {
+		err = fmt.Errorf("list document chunks: %w", err)
 		return nil, err
 	}
 

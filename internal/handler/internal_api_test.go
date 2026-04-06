@@ -36,6 +36,7 @@ type fakeDocumentService struct {
 	pdfReq         appdto.ImportPDFDocumentRequest
 	importPDFCalls int
 	indexedDocID   uint
+	chunks         []entity.DocumentChunk
 }
 
 func (f *fakeDocumentService) ImportTextDocument(_ context.Context, req appdto.ImportTextDocumentRequest) (*entity.Document, error) {
@@ -56,6 +57,10 @@ func (f *fakeDocumentService) IndexDocument(_ context.Context, documentID uint) 
 
 func (f *fakeDocumentService) ListDocuments(_ context.Context, _ uint) ([]entity.Document, error) {
 	return nil, nil
+}
+
+func (f *fakeDocumentService) ListDocumentChunks(_ context.Context, _ uint) ([]entity.DocumentChunk, error) {
+	return f.chunks, f.err
 }
 
 func (f *fakeDocumentService) DeleteDocument(_ context.Context, _ uint) error {
@@ -152,5 +157,38 @@ func TestImportPDFDocumentRejectsJSONFilePath(t *testing.T) {
 	}
 	if service.importPDFCalls != 0 {
 		t.Fatalf("ImportPDFDocument() calls = %d, want 0", service.importPDFCalls)
+	}
+}
+
+func TestListDocumentChunksReturnsMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	service := &fakeDocumentService{
+		chunks: []entity.DocumentChunk{
+			{DocumentID: 9, ChunkIndex: 0, ChunkType: "table", TableID: "table_1", PageNo: 2, Content: "A|B"},
+		},
+	}
+	handler := NewInternalAPIHandler(&fakeKnowledgeBaseService{}, service)
+	router := gin.New()
+	router.GET("/api/documents/:id/chunks", handler.ListDocumentChunks)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/9/chunks", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	var payload struct {
+		Data []entity.DocumentChunk `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(payload.Data) != 1 {
+		t.Fatalf("len(data)=%d, want 1", len(payload.Data))
+	}
+	if payload.Data[0].ChunkType != "table" || payload.Data[0].TableID != "table_1" {
+		t.Fatalf("chunk metadata = %+v", payload.Data[0])
 	}
 }

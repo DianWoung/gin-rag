@@ -11,6 +11,13 @@ type Splitter struct {
 	chunkOverlap int
 }
 
+type Chunk struct {
+	Content string
+	Type    string
+	PageNo  int
+	TableID string
+}
+
 func NewSplitter(chunkSize, chunkOverlap int) *Splitter {
 	if chunkSize <= 0 {
 		chunkSize = 800
@@ -43,6 +50,101 @@ func (s *Splitter) Split(content string) []string {
 
 	segments := splitIntoSegments(content, s.chunkSize)
 	return s.mergeSegments(segments)
+}
+
+// SplitBlocks chunks structured content blocks while preserving block metadata.
+func (s *Splitter) SplitBlocks(blocks []ContentBlock) []Chunk {
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	chunks := make([]Chunk, 0, len(blocks))
+	for _, block := range blocks {
+		blockType := strings.TrimSpace(block.Type)
+		if blockType == "" {
+			blockType = BlockTypeText
+		}
+
+		switch blockType {
+		case BlockTypeTable:
+			tableChunks := s.splitTableBlock(block)
+			chunks = append(chunks, tableChunks...)
+		default:
+			parts := s.Split(block.Content)
+			for _, part := range parts {
+				chunks = append(chunks, Chunk{
+					Content: strings.TrimSpace(part),
+					Type:    blockType,
+					PageNo:  block.PageNo,
+					TableID: block.TableID,
+				})
+			}
+		}
+	}
+
+	return compactChunks(chunks)
+}
+
+func (s *Splitter) splitTableBlock(block ContentBlock) []Chunk {
+	lines := splitNonEmptyLines(block.Content)
+	if len(lines) == 0 {
+		return nil
+	}
+	if len(lines) == 1 {
+		return []Chunk{{
+			Content: lines[0],
+			Type:    BlockTypeTable,
+			PageNo:  block.PageNo,
+			TableID: block.TableID,
+		}}
+	}
+
+	header := lines[0]
+	rows := lines[1:]
+	result := make([]Chunk, 0, len(rows))
+
+	for start := 0; start < len(rows); {
+		current := []string{header}
+		end := start
+		for end < len(rows) {
+			candidate := append(current, rows[end])
+			if runeLen(strings.Join(candidate, "\n")) > s.chunkSize {
+				break
+			}
+			current = candidate
+			end++
+		}
+		if end == start {
+			current = append(current, rows[start])
+			end++
+		}
+
+		result = append(result, Chunk{
+			Content: strings.Join(current, "\n"),
+			Type:    BlockTypeTable,
+			PageNo:  block.PageNo,
+			TableID: block.TableID,
+		})
+
+		next := end
+		if s.chunkOverlap > 0 && end < len(rows) {
+			total := 0
+			for i := end - 1; i > start; i-- {
+				add := runeLen(rows[i]) + 1
+				if total+add > s.chunkOverlap {
+					break
+				}
+				total += add
+				next = i
+			}
+		}
+		if next <= start {
+			next = end
+		}
+		start = next
+	}
+
+	return result
 }
 
 // splitIntoSegments breaks text into paragraph-level or sentence-level pieces.
@@ -147,6 +249,19 @@ func splitParagraphs(text string) []string {
 	return strings.Split(text, "\n\n")
 }
 
+func splitNonEmptyLines(text string) []string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
 // splitSentences splits text at sentence-ending punctuation while keeping the
 // punctuation attached to the preceding sentence. Handles both CJK (。！？）
 // and Western (.!?) sentence endings.
@@ -233,4 +348,19 @@ func splitByRune(text string, size int) []string {
 
 func runeLen(s string) int {
 	return utf8.RuneCountInString(s)
+}
+
+func compactChunks(chunks []Chunk) []Chunk {
+	out := make([]Chunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		chunk.Content = strings.TrimSpace(chunk.Content)
+		if chunk.Content == "" {
+			continue
+		}
+		if strings.TrimSpace(chunk.Type) == "" {
+			chunk.Type = BlockTypeText
+		}
+		out = append(out, chunk)
+	}
+	return out
 }

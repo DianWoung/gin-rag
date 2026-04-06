@@ -114,6 +114,33 @@ func TestRetrievalPrecisionAtKSkipsWithoutChunks(t *testing.T) {
 	t.Fatal("retrieval_precision_at_k result not found")
 }
 
+func TestTableCellAccuracyScoresWhenTableLikeChunksExist(t *testing.T) {
+	stored := StoredSample{
+		SampleID: "sample-4",
+		Sample: tracebridge.ChatSample{
+			Answer: "A 10 B 12",
+			Chunks: []tracebridge.RetrievedChunk{
+				{Index: 0, Content: "item  price\nA     10\nB     12"},
+			},
+		},
+	}
+
+	results := ScoreChatSample(stored, nil)
+	for _, result := range results {
+		if result.Metric != "table_cell_accuracy" {
+			continue
+		}
+		if result.Status != StatusScored {
+			t.Fatalf("Status = %q, want scored", result.Status)
+		}
+		if result.Score <= 0 {
+			t.Fatalf("Score = %.2f, want > 0", result.Score)
+		}
+		return
+	}
+	t.Fatal("table_cell_accuracy result not found")
+}
+
 func TestSummarizeResultsAggregatesByTarget(t *testing.T) {
 	results := []EvaluationResult{
 		{Target: TargetCaptured, Metric: "grounded_answer", Status: StatusScored, Score: 1},

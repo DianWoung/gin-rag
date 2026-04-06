@@ -107,7 +107,7 @@ type metricAgg struct {
 	total float64
 }
 
-var focusMetrics = []string{"retrieval_precision_at_k", "grounded_answer"}
+var focusMetrics = []string{"retrieval_precision_at_k", "grounded_answer", "table_cell_accuracy"}
 
 func exportTrace(traceID string, stdout io.Writer) error {
 	db, err := openEvalDB()

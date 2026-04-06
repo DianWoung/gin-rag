@@ -32,6 +32,7 @@ func NewRouter(adminAPIKey string, internalAPI *handler.InternalAPIHandler, open
 	api.POST("/documents/:id/index", internalAPI.IndexDocument)
 	api.DELETE("/documents/:id", internalAPI.DeleteDocument)
 	api.GET("/documents", internalAPI.ListDocuments)
+	api.GET("/documents/:id/chunks", internalAPI.ListDocumentChunks)
 	api.GET("/debug/phoenix/spans", phoenixSpansProxyHandler())
 
 	router.POST("/v1/chat/completions", openAI.ChatCompletions)

@@ -47,6 +47,10 @@ func (routerTestDocumentService) ListDocuments(context.Context, uint) ([]entity.
 	return []entity.Document{{ID: 1}}, nil
 }
 
+func (routerTestDocumentService) ListDocumentChunks(context.Context, uint) ([]entity.DocumentChunk, error) {
+	return []entity.DocumentChunk{{DocumentID: 1, ChunkIndex: 0, ChunkType: "text"}}, nil
+}
+
 func (routerTestDocumentService) DeleteDocument(context.Context, uint) error {
 	return nil
 }

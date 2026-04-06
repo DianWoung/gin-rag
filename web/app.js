@@ -374,6 +374,18 @@ async function listDocs() {
   log(`Listed documents for KB #${state.kbId}`);
 }
 
+async function listChunks() {
+  requireDoc();
+  const body = await requestJSON(`${apiBase()}/api/documents/${state.docId}/chunks`, {
+    headers: {
+      ...adminHeaders(),
+    },
+  });
+  write(ui.jsonOutput, body);
+  setTab("json");
+  log(`Listed chunks for document #${state.docId}`);
+}
+
 async function chat(stream) {
   requireKb();
   const question = ui.chatQuestion.value.trim();
@@ -530,6 +542,7 @@ function bindEvents() {
   $("importPdfBtn").addEventListener("click", () => runAction(importPdf));
   $("indexDocBtn").addEventListener("click", () => runAction(indexDoc));
   $("listDocsBtn").addEventListener("click", () => runAction(listDocs));
+  $("listChunksBtn").addEventListener("click", () => runAction(listChunks));
   $("chatBtn").addEventListener("click", () => runAction(() => chat(false)));
   $("chatStreamBtn").addEventListener("click", () => runAction(() => chat(true)));
   $("latestTraceBtn").addEventListener("click", () => runAction(getLatestTrace));
