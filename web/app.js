@@ -5,7 +5,10 @@ const ui = {
   phoenixBase: $("phoenixBase"),
   phoenixProject: $("phoenixProject"),
   adminKey: $("adminKey"),
+  chatKey: $("chatKey"),
   chatModel: $("chatModel"),
+  chatMode: $("chatMode"),
+  agentMaxSteps: $("agentMaxSteps"),
   mysqlDsn: $("mysqlDsn"),
   kbName: $("kbName"),
   textTitle: $("textTitle"),
@@ -17,6 +20,7 @@ const ui = {
   traceId: $("traceId"),
   evalCmd: $("evalCmd"),
   qualityOutput: $("qualityOutput"),
+  agentTraceOutput: $("agentTraceOutput"),
   jsonOutput: $("jsonOutput"),
   streamOutput: $("streamOutput"),
   traceOutput: $("traceOutput"),
@@ -53,9 +57,52 @@ function adminHeaders() {
   return { Authorization: `Bearer ${key}` };
 }
 
+function chatHeaders() {
+  const key = (ui.chatKey.value || "").trim();
+  if (!key) {
+    return {};
+  }
+  return { Authorization: `Bearer ${key}` };
+}
+
 function write(panel, payload) {
   panel.textContent =
     typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+}
+
+function renderAgentTrace(steps, source = "unknown") {
+  if (!Array.isArray(steps) || steps.length === 0) {
+    ui.agentTraceOutput.textContent = "No agent steps yet.";
+    return;
+  }
+  const lines = [
+    `source: ${source}`,
+    "step | retrieved | action   | query",
+    "-----+----------+----------+------------------------------",
+  ];
+  for (const step of steps) {
+    const stepNo = String(step?.step ?? "-").padEnd(4, " ");
+    const retrieved = String(step?.retrieved_count ?? "-").padEnd(8, " ");
+    const action = String(step?.action || "search").padEnd(8, " ");
+    const query = String(step?.query || "");
+    lines.push(`${stepNo} | ${retrieved} | ${action} | ${query}`);
+  }
+  ui.agentTraceOutput.textContent = lines.join("\n");
+}
+
+function parseAgentStepLine(line) {
+  const match = line.match(
+    /^\[agent\]\s*step\s+(\d+)\/\d+\s+query=(?:"([^"]*)"|([^\n]+?))\s+retrieved=(\d+)$/i
+  );
+  if (!match) {
+    return null;
+  }
+  return {
+    step: Number.parseInt(match[1], 10),
+    query: (match[2] || match[3] || "").trim(),
+    retrieved_count: Number.parseInt(match[4], 10),
+    action: "search",
+  };
 }
 
 function log(message) {
@@ -392,9 +439,13 @@ async function chat(stream) {
   if (!question) {
     throw new Error("question is required");
   }
+  const mode = (ui.chatMode.value || "rag").trim();
+  const maxSteps = Number.parseInt(ui.agentMaxSteps.value, 10);
   const payload = {
     model: ui.chatModel.value.trim() || "deepseek-chat",
     knowledge_base_id: state.kbId,
+    mode,
+    max_steps: Number.isFinite(maxSteps) ? maxSteps : 3,
     temperature: 0.2,
     stream,
     messages: [{ role: "user", content: question }],
@@ -403,11 +454,18 @@ async function chat(stream) {
   if (!stream) {
     const body = await requestJSON(`${apiBase()}/v1/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...chatHeaders() },
       body: JSON.stringify(payload),
     });
     write(ui.jsonOutput, body);
     setTab("json");
+    const metadataSteps = body?.metadata?.agent?.steps;
+    if (Array.isArray(metadataSteps) && metadataSteps.length) {
+      renderAgentTrace(metadataSteps, "metadata");
+      log(`Agent steps: ${metadataSteps.length}`);
+    } else {
+      renderAgentTrace([], "metadata");
+    }
     log("Completed non-stream chat");
     return;
   }
@@ -415,7 +473,7 @@ async function chat(stream) {
   ui.streamOutput.textContent = "";
   const response = await fetch(`${apiBase()}/v1/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...chatHeaders() },
     body: JSON.stringify(payload),
   });
   if (!response.ok || !response.body) {
@@ -423,13 +481,72 @@ async function chat(stream) {
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  let buffer = "";
+  let finalText = "";
+  const stepLogs = [];
+  const stepRows = [];
+
+  function renderStreamPanel() {
+    const header = stepLogs.length
+      ? `# Agent Steps\n${stepLogs.join("\n")}\n\n`
+      : "";
+    ui.streamOutput.textContent = `${header}# Assistant\n${finalText}`;
+    ui.streamOutput.scrollTop = ui.streamOutput.scrollHeight;
+  }
+
+  function consumeSSELine(line) {
+    if (!line.startsWith("data:")) {
+      return;
+    }
+    const payloadText = line.slice(5).trim();
+    if (!payloadText || payloadText === "[DONE]") {
+      return;
+    }
+    let obj;
+    try {
+      obj = JSON.parse(payloadText);
+    } catch {
+      return;
+    }
+    const delta = obj?.choices?.[0]?.delta?.content || "";
+    if (!delta) {
+      return;
+    }
+    if (delta.startsWith("[agent] step")) {
+      stepLogs.push(delta.trim());
+      const row = parseAgentStepLine(delta.trim());
+      if (row) {
+        stepRows.push(row);
+      }
+    } else {
+      finalText += delta;
+    }
+  }
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    ui.streamOutput.textContent += decoder.decode(value, { stream: true });
-    ui.streamOutput.scrollTop = ui.streamOutput.scrollHeight;
+    buffer += decoder.decode(value, { stream: true });
+    let idx = buffer.indexOf("\n");
+    while (idx >= 0) {
+      const line = buffer.slice(0, idx).trimEnd();
+      buffer = buffer.slice(idx + 1);
+      consumeSSELine(line);
+      idx = buffer.indexOf("\n");
+    }
+    renderStreamPanel();
+  }
+  if (buffer) {
+    consumeSSELine(buffer.trim());
+    renderStreamPanel();
   }
   setTab("stream");
+  if (stepLogs.length) {
+    renderAgentTrace(stepRows, "stream");
+    log(`Stream agent steps: ${stepLogs.length}`);
+  } else {
+    renderAgentTrace([], "stream");
+  }
   log("Completed stream chat");
 }
 
@@ -531,6 +648,7 @@ function initDefaults() {
   ui.apiBase.value = `${window.location.protocol}//${window.location.host}`;
   ui.phoenixBase.value = `${window.location.protocol}//${host}:6006`;
   renderQueryQuality({ message: "Load trace detail first." });
+  renderAgentTrace([], "init");
   syncIds();
   write(ui.logOutput, "");
   log("Console ready");

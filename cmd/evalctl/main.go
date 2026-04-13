@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dianwang-mac/go-rag/internal/appdto"
 	"github.com/dianwang-mac/go-rag/internal/config"
 	"github.com/dianwang-mac/go-rag/internal/eval"
 	"github.com/dianwang-mac/go-rag/internal/llm"
@@ -79,9 +80,21 @@ type sampleComparison struct {
 	OriginalQuery     string                              `json:"original_query,omitempty"`
 	RewrittenQuery    string                              `json:"rewritten_query,omitempty"`
 	ChunkCount        int                                 `json:"chunk_count"`
+	AgentTrace        *agentTraceSummary                  `json:"agent_trace,omitempty"`
 	Scores            map[string]map[string]metricOutcome `json:"scores"`
 	ManualCount       int                                 `json:"manual_count"`
 	ManualMetricScore map[string]float64                  `json:"manual_metric_scores,omitempty"`
+}
+
+type agentTraceSummary struct {
+	StepCount          int     `json:"step_count"`
+	InvalidStepCount   int     `json:"invalid_step_count"`
+	InvalidSearchRatio float64 `json:"invalid_search_ratio"`
+}
+
+type scoreAgentTraceSummary struct {
+	Captured *agentTraceSummary `json:"captured,omitempty"`
+	Replay   *agentTraceSummary `json:"replay,omitempty"`
 }
 
 type metricOutcome struct {
@@ -107,7 +120,13 @@ type metricAgg struct {
 	total float64
 }
 
-var focusMetrics = []string{"retrieval_precision_at_k", "grounded_answer", "table_cell_accuracy"}
+var focusMetrics = []string{
+	"retrieval_precision_at_k",
+	"grounded_answer",
+	"table_cell_accuracy",
+	"agent_step_efficiency",
+	"agent_invalid_search_ratio",
+}
 
 func exportTrace(traceID string, stdout io.Writer) error {
 	db, err := openEvalDB()
@@ -211,12 +230,14 @@ func scoreSample(sampleID string, stdout io.Writer) error {
 	}
 
 	payload := struct {
-		Results  []eval.EvaluationResult `json:"results"`
-		Summary  []eval.ResultSummary    `json:"summary"`
-		ReplayID string                  `json:"replay_run_id,omitempty"`
+		Results           []eval.EvaluationResult   `json:"results"`
+		Summary           []eval.ResultSummary      `json:"summary"`
+		ReplayID          string                    `json:"replay_run_id,omitempty"`
+		AgentTraceSummary *scoreAgentTraceSummary   `json:"agent_trace_summary,omitempty"`
 	}{
-		Results: results,
-		Summary: eval.SummarizeResults(results),
+		Results:           results,
+		Summary:           eval.SummarizeResults(results),
+		AgentTraceSummary: buildScoreAgentTraceSummary(stored, replay),
 	}
 	if replay != nil {
 		payload.ReplayID = replay.ReplayRunID
@@ -279,17 +300,19 @@ func runTrace(traceID string, stdout io.Writer) error {
 	}
 
 	payload := struct {
-		SampleID string                      `json:"sample_id"`
-		Replay   eval.ReplayRun              `json:"replay"`
-		Warnings []tracebridge.ExportWarning `json:"warnings,omitempty"`
-		Results  []eval.EvaluationResult     `json:"results"`
-		Summary  []eval.ResultSummary        `json:"summary"`
+		SampleID           string                    `json:"sample_id"`
+		Replay             eval.ReplayRun            `json:"replay"`
+		Warnings           []tracebridge.ExportWarning `json:"warnings,omitempty"`
+		Results            []eval.EvaluationResult   `json:"results"`
+		Summary            []eval.ResultSummary      `json:"summary"`
+		AgentTraceSummary  *scoreAgentTraceSummary   `json:"agent_trace_summary,omitempty"`
 	}{
-		SampleID: stored.SampleID,
-		Replay:   replay,
-		Warnings: stored.Warnings,
-		Results:  results,
-		Summary:  eval.SummarizeResults(results),
+		SampleID:          stored.SampleID,
+		Replay:            replay,
+		Warnings:          stored.Warnings,
+		Results:           results,
+		Summary:           eval.SummarizeResults(results),
+		AgentTraceSummary: buildScoreAgentTraceSummary(stored, &replay),
 	}
 
 	encoder := json.NewEncoder(stdout)
@@ -323,12 +346,20 @@ func compareSamples(sampleIDs []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	replayRuns := map[string]*eval.ReplayRun{}
+	for _, sampleID := range sampleIDs {
+		run, runErr := repo.GetLatestReplayRun(sampleID)
+		if runErr != nil {
+			return runErr
+		}
+		replayRuns[sampleID] = run
+	}
 	annotations, err := repo.ListManualAnnotations(sampleIDs)
 	if err != nil {
 		return err
 	}
 
-	payload := buildComparisonPayload(sampleIDs, samples, results, annotations, focusMetrics)
+	payload := buildComparisonPayload(sampleIDs, samples, replayRuns, results, annotations, focusMetrics)
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(payload)
@@ -337,6 +368,7 @@ func compareSamples(sampleIDs []string, stdout io.Writer) error {
 func buildComparisonPayload(
 	sampleIDs []string,
 	samples map[string]eval.StoredSample,
+	replayRuns map[string]*eval.ReplayRun,
 	results []eval.EvaluationResult,
 	annotations []eval.ManualAnnotation,
 	metrics []string,
@@ -356,6 +388,7 @@ func buildComparisonPayload(
 			OriginalQuery:     stored.Sample.OriginalQuery,
 			RewrittenQuery:    stored.Sample.RewrittenQuery,
 			ChunkCount:        len(stored.Sample.Chunks),
+			AgentTrace:        summarizeAgentTrace(stored.AgentSteps, replayRuns[sampleID]),
 			Scores:            map[string]map[string]metricOutcome{},
 			ManualMetricScore: map[string]float64{},
 		}
@@ -429,6 +462,41 @@ func buildComparisonPayload(
 		BySample:        bySample,
 		Aggregate:       aggregate,
 		ManualAggregate: manual,
+	}
+}
+
+func summarizeAgentTrace(capturedSteps []appdto.AgentStep, replayRun *eval.ReplayRun) *agentTraceSummary {
+	steps := capturedSteps
+	if replayRun != nil && len(replayRun.AgentSteps) > 0 {
+		steps = replayRun.AgentSteps
+	}
+	if len(steps) == 0 {
+		return nil
+	}
+
+	invalid := 0
+	for _, step := range steps {
+		if step.RetrievedCount == 0 {
+			invalid++
+		}
+	}
+
+	return &agentTraceSummary{
+		StepCount:          len(steps),
+		InvalidStepCount:   invalid,
+		InvalidSearchRatio: safeAverage(float64(invalid), len(steps)),
+	}
+}
+
+func buildScoreAgentTraceSummary(stored eval.StoredSample, replayRun *eval.ReplayRun) *scoreAgentTraceSummary {
+	captured := summarizeAgentTrace(stored.AgentSteps, nil)
+	replay := summarizeAgentTrace(nil, replayRun)
+	if captured == nil && replay == nil {
+		return nil
+	}
+	return &scoreAgentTraceSummary{
+		Captured: captured,
+		Replay:   replay,
 	}
 }
 

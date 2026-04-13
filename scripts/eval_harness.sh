@@ -15,6 +15,7 @@ HARNESS_MAX_UNLABELED_RATIO="${HARNESS_MAX_UNLABELED_RATIO:-0.20}"
 HARNESS_GROUNDED_MAX_DROP="${HARNESS_GROUNDED_MAX_DROP:-0.03}"
 HARNESS_RETRIEVAL_MAX_DROP="${HARNESS_RETRIEVAL_MAX_DROP:-0.03}"
 HARNESS_TABLE_CELL_MAX_DROP="${HARNESS_TABLE_CELL_MAX_DROP:-0.05}"
+HARNESS_AGENT_INVALID_MAX_RISE="${HARNESS_AGENT_INVALID_MAX_RISE:-0.10}"
 
 if [[ -z "$MYSQL_DSN" ]]; then
   echo "MYSQL_DSN is required" >&2
@@ -45,6 +46,7 @@ Optional environment variables:
   HARNESS_GROUNDED_MAX_DROP      default: 0.03
   HARNESS_RETRIEVAL_MAX_DROP     default: 0.03
   HARNESS_TABLE_CELL_MAX_DROP    default: 0.05
+  HARNESS_AGENT_INVALID_MAX_RISE default: 0.10
 EOF
 }
 
@@ -109,6 +111,9 @@ current_metrics="$(
       ),
       auto_captured_table_cell_accuracy: (
         [.aggregate[] | select(.target=="captured" and .metric=="table_cell_accuracy") | .average_score] | first // null
+      ),
+      auto_replay_agent_invalid_search_ratio: (
+        [.aggregate[] | select(.target=="replay" and .metric=="agent_invalid_search_ratio") | .average_score] | first // null
       )
     }
   ' <<<"$compare_output"
@@ -146,10 +151,13 @@ validation_report="$(
     --argjson max_grounded_drop "$HARNESS_GROUNDED_MAX_DROP" \
     --argjson max_retrieval_drop "$HARNESS_RETRIEVAL_MAX_DROP" \
     --argjson max_table_cell_drop "$HARNESS_TABLE_CELL_MAX_DROP" \
+    --argjson max_agent_invalid_rise "$HARNESS_AGENT_INVALID_MAX_RISE" \
     --arg require_manual "$HARNESS_REQUIRE_MANUAL" \
     '
       def drop($base; $cur):
         if ($base == null or $cur == null) then null else ($base - $cur) end;
+      def rise($base; $cur):
+        if ($base == null or $cur == null) then null else ($cur - $base) end;
       def failed($name; $ok; $detail):
         {name:$name, ok:$ok, detail:$detail};
 
@@ -158,9 +166,11 @@ validation_report="$(
       | (drop($baseline.manual_grounded_answer; $current.manual_grounded_answer)) as $drop_manual_grounded
       | (drop($baseline.manual_retrieval_relevance; $current.manual_retrieval_relevance)) as $drop_manual_retrieval
       | (drop($baseline.auto_captured_table_cell_accuracy; $current.auto_captured_table_cell_accuracy)) as $drop_table_cell
+      | (rise($baseline.auto_replay_agent_invalid_search_ratio; $current.auto_replay_agent_invalid_search_ratio)) as $rise_agent_invalid
       | (if $drop_manual_grounded == null then true else ($drop_manual_grounded <= $max_grounded_drop) end) as $ok_manual_grounded_drop
       | (if $drop_manual_retrieval == null then true else ($drop_manual_retrieval <= $max_retrieval_drop) end) as $ok_manual_retrieval_drop
       | (if $drop_table_cell == null then true else ($drop_table_cell <= $max_table_cell_drop) end) as $ok_table_cell_drop
+      | (if $rise_agent_invalid == null then true else ($rise_agent_invalid <= $max_agent_invalid_rise) end) as $ok_agent_invalid_rise
       | (
           $baseline.auto_captured_grounded_answer != null
           and $baseline.manual_grounded_answer != null
@@ -188,6 +198,7 @@ validation_report="$(
             failed("manual_grounded_drop"; $ok_manual_grounded_drop; ("drop=" + (($drop_manual_grounded // 0)|tostring) + ", max=" + ($max_grounded_drop|tostring))),
             failed("manual_retrieval_drop"; $ok_manual_retrieval_drop; ("drop=" + (($drop_manual_retrieval // 0)|tostring) + ", max=" + ($max_retrieval_drop|tostring))),
             failed("table_cell_accuracy_drop"; $ok_table_cell_drop; ("drop=" + (($drop_table_cell // 0)|tostring) + ", max=" + ($max_table_cell_drop|tostring))),
+            failed("agent_invalid_search_ratio_rise"; $ok_agent_invalid_rise; ("rise=" + (($rise_agent_invalid // 0)|tostring) + ", max=" + ($max_agent_invalid_rise|tostring))),
             failed("direction_conflict_grounded"; ($direction_conflict_grounded | not); ("conflict=" + ($direction_conflict_grounded|tostring))),
             failed("direction_conflict_retrieval"; ($direction_conflict_retrieval | not); ("conflict=" + ($direction_conflict_retrieval|tostring)))
           ]

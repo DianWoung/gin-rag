@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/dianwang-mac/go-rag/internal/appdto"
 	"github.com/dianwang-mac/go-rag/internal/eval"
 	"github.com/dianwang-mac/go-rag/internal/tracebridge"
 )
@@ -56,6 +57,7 @@ func TestBuildComparisonPayloadAggregatesFocusMetrics(t *testing.T) {
 	payload := buildComparisonPayload(
 		[]string{"s1", "s2"},
 		samples,
+		map[string]*eval.ReplayRun{},
 		results,
 		nil,
 		[]string{"retrieval_precision_at_k", "grounded_answer"},
@@ -115,6 +117,7 @@ func TestBuildComparisonPayloadAggregatesManualAnnotations(t *testing.T) {
 	payload := buildComparisonPayload(
 		[]string{"s1", "s2"},
 		samples,
+		map[string]*eval.ReplayRun{},
 		nil,
 		annotations,
 		[]string{"retrieval_precision_at_k", "grounded_answer"},
@@ -131,5 +134,51 @@ func TestBuildComparisonPayloadAggregatesManualAnnotations(t *testing.T) {
 	}
 	if payload.ManualAggregate.MetricScores["retrieval_relevance"] != (1+0.6+0.4)/3 {
 		t.Fatalf("retrieval_relevance average=%f", payload.ManualAggregate.MetricScores["retrieval_relevance"])
+	}
+}
+
+func TestBuildComparisonPayloadIncludesAgentTraceSummary(t *testing.T) {
+	samples := map[string]eval.StoredSample{
+		"s1": {
+			SampleID: "s1",
+			Sample:   tracebridge.ChatSample{Question: "q1"},
+			AgentSteps: []appdto.AgentStep{
+				{Step: 1, Query: "q", RetrievedCount: 2},
+				{Step: 2, Query: "q2", RetrievedCount: 0},
+			},
+		},
+	}
+	replayRuns := map[string]*eval.ReplayRun{
+		"s1": {
+			SampleID: "s1",
+			AgentSteps: []appdto.AgentStep{
+				{Step: 1, Query: "rq", RetrievedCount: 1},
+				{Step: 2, Query: "rq2", RetrievedCount: 0},
+				{Step: 3, Query: "rq3", RetrievedCount: 0},
+			},
+		},
+	}
+
+	payload := buildComparisonPayload(
+		[]string{"s1"},
+		samples,
+		replayRuns,
+		nil,
+		nil,
+		[]string{"grounded_answer"},
+	)
+
+	if len(payload.BySample) != 1 {
+		t.Fatalf("len(BySample)=%d, want 1", len(payload.BySample))
+	}
+	trace := payload.BySample[0].AgentTrace
+	if trace == nil {
+		t.Fatal("AgentTrace=nil, want summary")
+	}
+	if trace.StepCount != 3 || trace.InvalidStepCount != 2 {
+		t.Fatalf("trace=%+v, want StepCount=3 InvalidStepCount=2", trace)
+	}
+	if trace.InvalidSearchRatio != float64(2)/3 {
+		t.Fatalf("InvalidSearchRatio=%f, want %f", trace.InvalidSearchRatio, float64(2)/3)
 	}
 }

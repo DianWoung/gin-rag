@@ -31,6 +31,9 @@ import (
 const (
 	retrievalTopK = 4  // final number of chunks fed to LLM
 	rerankFetchK  = 20 // broader recall when reranker is available
+	chatModeRAG   = "rag"
+	chatModeAgent = "agent_rag"
+	agentMaxSteps = 3
 )
 
 type chatVectorStore interface {
@@ -100,24 +103,47 @@ func (s *ChatService) ChatCompletion(ctx context.Context, req appdto.ChatRequest
 		observability.TextAttribute(observability.AttrQuestion, question),
 		attribute.Int(observability.AttrHistoryLength, len(history)),
 	)
-	runner, err := s.buildRAGRunner(ctx, kb, req)
-	if err != nil {
-		return appdto.ChatResult{}, err
+	mode := normalizeChatMode(req.Mode)
+	var answer string
+	var metadata *appdto.ChatMetadata
+	switch mode {
+	case chatModeAgent:
+		agentRun, agentErr := s.chatCompletionAgentRAG(ctx, kb, question, history, req)
+		if agentErr != nil {
+			return appdto.ChatResult{}, agentErr
+		}
+		answer = agentRun.Answer
+		metadata = &appdto.ChatMetadata{
+			Mode: chatModeAgent,
+			Agent: &appdto.AgentTrace{
+				Steps: agentRun.Steps,
+			},
+			Source: "agent",
+		}
+	default:
+		runner, buildErr := s.buildRAGRunner(ctx, kb, req)
+		if buildErr != nil {
+			return appdto.ChatResult{}, buildErr
+		}
+
+		resp, invokeErr := runner.Invoke(ctx, ragInput{
+			Question:       question,
+			History:        history,
+			CollectionName: kb.CollectionName,
+			EmbeddingModel: kb.EmbeddingModel,
+			DocumentIDs:    req.DocumentIDs,
+			SourceTypes:    req.SourceTypes,
+		})
+		if invokeErr != nil {
+			return appdto.ChatResult{}, fmt.Errorf("invoke rag chain: %w", invokeErr)
+		}
+		answer = strings.TrimSpace(resp.Content)
+		metadata = &appdto.ChatMetadata{
+			Mode:   chatModeRAG,
+			Source: "chain",
+		}
 	}
 
-	resp, err := runner.Invoke(ctx, ragInput{
-		Question:       question,
-		History:        history,
-		CollectionName: kb.CollectionName,
-		EmbeddingModel: kb.EmbeddingModel,
-		DocumentIDs:    req.DocumentIDs,
-		SourceTypes:    req.SourceTypes,
-	})
-	if err != nil {
-		return appdto.ChatResult{}, fmt.Errorf("invoke rag chain: %w", err)
-	}
-
-	answer := strings.TrimSpace(resp.Content)
 	usage := appdto.Usage{
 		PromptTokens:     estimateTokens(question) + estimateTokens(joinHistory(history)),
 		CompletionTokens: estimateTokens(answer),
@@ -130,9 +156,10 @@ func (s *ChatService) ChatCompletion(ctx context.Context, req appdto.ChatRequest
 	}
 
 	result = appdto.ChatResult{
-		Model:   modelName,
-		Content: answer,
-		Usage:   usage,
+		Model:    modelName,
+		Content:  answer,
+		Usage:    usage,
+		Metadata: metadata,
 	}
 
 	return result, nil
@@ -164,6 +191,10 @@ func (s *ChatService) ChatCompletionStream(ctx context.Context, req appdto.ChatR
 		observability.TextAttribute(observability.AttrQuestion, question),
 		attribute.Int(observability.AttrHistoryLength, len(history)),
 	)
+
+	if normalizeChatMode(req.Mode) == chatModeAgent {
+		return s.streamAgentRAG(ctx, kb, question, history, req)
+	}
 
 	runner, err := s.buildRAGRunner(ctx, kb, req)
 	if err != nil {
@@ -218,6 +249,317 @@ func (s *ChatService) ChatCompletionStream(ctx context.Context, req appdto.ChatR
 	}()
 
 	return stream, nil
+}
+
+type agentDecision struct {
+	Action      string `json:"action"`
+	Query       string `json:"query,omitempty"`
+	FinalAnswer string `json:"final_answer,omitempty"`
+}
+
+type agentRunResult struct {
+	Answer       string
+	Steps        []appdto.AgentStep
+	FinalSources []sourceMatch
+}
+
+func normalizeChatMode(mode string) string {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if mode == "" {
+		return chatModeRAG
+	}
+	return mode
+}
+
+func normalizeMaxSteps(maxSteps int) int {
+	if maxSteps <= 0 || maxSteps > agentMaxSteps {
+		return agentMaxSteps
+	}
+	return maxSteps
+}
+
+func (s *ChatService) chatCompletionAgentRAG(ctx context.Context, kb *entity.KnowledgeBase, question string, history []*schema.Message, req appdto.ChatRequest) (agentRunResult, error) {
+	chatModel, err := s.provider.NewChatModel(ctx, req.Model, req.Temperature)
+	if err != nil {
+		return agentRunResult{}, err
+	}
+	embedder, err := s.provider.NewEmbedder(ctx, kb.EmbeddingModel)
+	if err != nil {
+		return agentRunResult{}, err
+	}
+
+	currentQuery := question
+	maxSteps := normalizeMaxSteps(req.MaxSteps)
+	var lastSources []sourceMatch
+	var steps []appdto.AgentStep
+
+	for step := 1; step <= maxSteps; step++ {
+		retrievalQuery, matches, sources, err := s.retrieveSources(ctx, chatModel, embedder, kb, currentQuery, history, req, step == 1)
+		if err != nil {
+			return agentRunResult{}, err
+		}
+		lastSources = sources
+
+		plannerMessages := []*schema.Message{
+			{
+				Role: schema.System,
+				Content: "You are an agent planner for RAG. Return strict JSON only with shape " +
+					`{"action":"search","query":"..."} or {"action":"final","final_answer":"..."}. ` +
+					"If retrieved context is enough, return action=final with grounded answer and citations like [1].",
+			},
+			{
+				Role: schema.User,
+				Content: fmt.Sprintf(
+					"Question: %s\nCurrent query: %s\nStep: %d/%d\nRetrieved chunks: %s",
+					question,
+					retrievalQuery,
+					step,
+					maxSteps,
+					encodeAgentChunksForPlanner(matches, sources),
+				),
+			},
+		}
+		decisionResp, err := chatModel.Generate(ctx, plannerMessages)
+		if err != nil {
+			return agentRunResult{}, fmt.Errorf("agent planner generate: %w", err)
+		}
+
+		var decision agentDecision
+		if err := json.Unmarshal([]byte(strings.TrimSpace(decisionResp.Content)), &decision); err != nil {
+			steps = append(steps, appdto.AgentStep{
+				Step:           step,
+				Query:          retrievalQuery,
+				RetrievedCount: len(matches),
+				Action:         "fallback",
+			})
+			break
+		}
+		action := strings.ToLower(strings.TrimSpace(decision.Action))
+		steps = append(steps, appdto.AgentStep{
+			Step:           step,
+			Query:          retrievalQuery,
+			RetrievedCount: len(matches),
+			Action:         action,
+		})
+
+		switch action {
+		case "search":
+			if step < maxSteps && strings.TrimSpace(decision.Query) != "" {
+				currentQuery = strings.TrimSpace(decision.Query)
+				continue
+			}
+		case "final":
+			if strings.TrimSpace(decision.FinalAnswer) != "" {
+				return agentRunResult{
+					Answer:       strings.TrimSpace(decision.FinalAnswer),
+					Steps:        steps,
+					FinalSources: lastSources,
+				}, nil
+			}
+		}
+		break
+	}
+
+	finalMessages := buildPromptMessages(question, history, lastSources)
+	resp, err := chatModel.Generate(ctx, finalMessages)
+	if err != nil {
+		return agentRunResult{}, fmt.Errorf("agent final answer generate: %w", err)
+	}
+	return agentRunResult{
+		Answer:       strings.TrimSpace(resp.Content),
+		Steps:        steps,
+		FinalSources: lastSources,
+	}, nil
+}
+
+func (s *ChatService) streamAgentRAG(ctx context.Context, kb *entity.KnowledgeBase, question string, history []*schema.Message, req appdto.ChatRequest) (*schema.StreamReader[appdto.ChatStreamChunk], error) {
+	chatModel, err := s.provider.NewChatModel(ctx, req.Model, req.Temperature)
+	if err != nil {
+		return nil, err
+	}
+	embedder, err := s.provider.NewEmbedder(ctx, kb.EmbeddingModel)
+	if err != nil {
+		return nil, err
+	}
+
+	modelName := req.Model
+	if modelName == "" {
+		modelName = s.provider.DefaultChatModel()
+	}
+
+	stream, writer := schema.Pipe[appdto.ChatStreamChunk](0)
+	go func() {
+		defer writer.Close()
+		currentQuery := question
+		maxSteps := normalizeMaxSteps(req.MaxSteps)
+		var lastSources []sourceMatch
+
+		for step := 1; step <= maxSteps; step++ {
+			retrievalQuery, matches, sources, retrieveErr := s.retrieveSources(ctx, chatModel, embedder, kb, currentQuery, history, req, step == 1)
+			if retrieveErr != nil {
+				writer.Send(appdto.ChatStreamChunk{}, retrieveErr)
+				return
+			}
+			lastSources = sources
+
+			writer.Send(appdto.ChatStreamChunk{
+				Model: modelName,
+				Delta: fmt.Sprintf("[agent] step %d/%d query=%q retrieved=%d\n", step, maxSteps, retrievalQuery, len(matches)),
+			}, nil)
+
+			plannerMessages := []*schema.Message{
+				{
+					Role: schema.System,
+					Content: "You are an agent planner for RAG. Return strict JSON only with shape " +
+						`{"action":"search","query":"..."} or {"action":"final","final_answer":"..."}. ` +
+						"If retrieved context is enough, return action=final with grounded answer and citations like [1].",
+				},
+				{
+					Role: schema.User,
+					Content: fmt.Sprintf(
+						"Question: %s\nCurrent query: %s\nStep: %d/%d\nRetrieved chunks: %s",
+						question,
+						retrievalQuery,
+						step,
+						maxSteps,
+						encodeAgentChunksForPlanner(matches, sources),
+					),
+				},
+			}
+			decisionResp, plannerErr := chatModel.Generate(ctx, plannerMessages)
+			if plannerErr != nil {
+				writer.Send(appdto.ChatStreamChunk{}, fmt.Errorf("agent planner generate: %w", plannerErr))
+				return
+			}
+
+			var decision agentDecision
+			if err := json.Unmarshal([]byte(strings.TrimSpace(decisionResp.Content)), &decision); err != nil {
+				break
+			}
+
+			switch strings.ToLower(strings.TrimSpace(decision.Action)) {
+			case "search":
+				if step < maxSteps && strings.TrimSpace(decision.Query) != "" {
+					currentQuery = strings.TrimSpace(decision.Query)
+					continue
+				}
+			case "final":
+				if strings.TrimSpace(decision.FinalAnswer) != "" {
+					writer.Send(appdto.ChatStreamChunk{
+						Model:        modelName,
+						Delta:        strings.TrimSpace(decision.FinalAnswer),
+						FinishReason: "stop",
+					}, nil)
+					return
+				}
+			}
+			break
+		}
+
+		finalMessages := buildPromptMessages(question, history, lastSources)
+		upstream, streamErr := chatModel.Stream(ctx, finalMessages)
+		if streamErr != nil {
+			writer.Send(appdto.ChatStreamChunk{}, fmt.Errorf("agent final answer stream: %w", streamErr))
+			return
+		}
+		defer upstream.Close()
+
+		for {
+			msg, recvErr := upstream.Recv()
+			if errors.Is(recvErr, io.EOF) {
+				writer.Send(appdto.ChatStreamChunk{Model: modelName, FinishReason: "stop"}, nil)
+				return
+			}
+			if recvErr != nil {
+				writer.Send(appdto.ChatStreamChunk{}, recvErr)
+				return
+			}
+
+			chunk := appdto.ChatStreamChunk{
+				Model: modelName,
+				Delta: msg.Content,
+			}
+			if msg.ResponseMeta != nil {
+				chunk.FinishReason = msg.ResponseMeta.FinishReason
+			}
+			if chunk.Delta == "" && chunk.FinishReason == "" {
+				continue
+			}
+			writer.Send(chunk, nil)
+		}
+	}()
+
+	return stream, nil
+}
+
+func encodeAgentChunksForPlanner(matches []store.SearchResult, sources []sourceMatch) string {
+	if len(matches) == 0 || len(sources) == 0 {
+		return "[]"
+	}
+	limit := len(matches)
+	if len(sources) < limit {
+		limit = len(sources)
+	}
+	items := make([]map[string]any, 0, limit)
+	for i := 0; i < limit; i++ {
+		match := matches[i]
+		title := sources[i].DocTitle
+		items = append(items, map[string]any{
+			"index":       i + 1,
+			"document_id": match.DocumentID,
+			"title":       title,
+			"content":     match.Content,
+			"score":       match.Score,
+		})
+	}
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
+	}
+	return string(payload)
+}
+
+func (s *ChatService) retrieveSources(ctx context.Context, chatModel einomodel.BaseChatModel, embedder einoembedding.Embedder, kb *entity.KnowledgeBase, query string, history []*schema.Message, req appdto.ChatRequest, allowRewrite bool) (string, []store.SearchResult, []sourceMatch, error) {
+	retrievalQuery := query
+	if allowRewrite && len(history) > 0 {
+		rewritten, rwErr := s.rewriteQuery(ctx, chatModel, query, history)
+		if rwErr != nil {
+			log.Printf("query rewrite failed, using original question: %v", rwErr)
+		} else if rewritten != "" {
+			retrievalQuery = rewritten
+		}
+	}
+
+	vectors, err := embedder.EmbedStrings(ctx, []string{retrievalQuery})
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("embed question: %w", err)
+	}
+
+	fetchK := uint64(retrievalTopK)
+	if s.reranker != nil {
+		fetchK = rerankFetchK
+	}
+
+	matches, err := s.vectors.Search(ctx, kb.CollectionName, vectors[0], fetchK, store.SearchFilter{
+		DocumentIDs: req.DocumentIDs,
+		SourceTypes: req.SourceTypes,
+	})
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	reranked := false
+	if s.reranker != nil && len(matches) > 0 {
+		matches, err = s.rerankMatches(ctx, retrievalQuery, matches)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		reranked = true
+	}
+	matches = sortMatchesForPrompt(matches)
+	logRetrieval(query, retrievalQuery, matches, reranked)
+	sources := s.buildSources(ctx, matches)
+	return retrievalQuery, matches, sources, nil
 }
 
 func (s *ChatService) findKnowledgeBase(ctx context.Context, req appdto.ChatRequest) (kb *entity.KnowledgeBase, err error) {

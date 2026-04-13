@@ -10,7 +10,7 @@ import (
 	webui "github.com/dianwang-mac/go-rag/web"
 )
 
-func NewRouter(adminAPIKey string, internalAPI *handler.InternalAPIHandler, openAI *handler.OpenAIHandler) *gin.Engine {
+func NewRouter(adminAPIKey, chatAPIKey string, internalAPI *handler.InternalAPIHandler, openAI *handler.OpenAIHandler) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery(), observability.Middleware())
 
@@ -35,7 +35,9 @@ func NewRouter(adminAPIKey string, internalAPI *handler.InternalAPIHandler, open
 	api.GET("/documents/:id/chunks", internalAPI.ListDocumentChunks)
 	api.GET("/debug/phoenix/spans", phoenixSpansProxyHandler())
 
-	router.POST("/v1/chat/completions", openAI.ChatCompletions)
+	v1 := router.Group("/v1")
+	v1.Use(handler.APIKeyAuthMiddleware(chatAPIKey, "chat api authentication failed"))
+	v1.POST("/chat/completions", openAI.ChatCompletions)
 
 	return router
 }

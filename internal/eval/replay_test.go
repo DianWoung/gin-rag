@@ -43,7 +43,7 @@ func TestReplayChatSampleUsesPersistedPromptAndSettings(t *testing.T) {
 		},
 	}
 
-	run, err := ReplayChatSample(context.Background(), fakeFactory{model: &fakeModel{answer: "rag means retrieval augmented generation"}}, stored)
+	run, err := ReplayChatSample(context.Background(), fakeFactory{model: &fakeModel{answer: "[agent] step 1/2 query=\"rag\" retrieved=2\nrag means retrieval augmented generation"}}, stored)
 	if err != nil {
 		t.Fatalf("ReplayChatSample() error = %v", err)
 	}
@@ -52,6 +52,9 @@ func TestReplayChatSampleUsesPersistedPromptAndSettings(t *testing.T) {
 	}
 	if run.Answer == "" {
 		t.Fatal("Answer = empty, want replay output")
+	}
+	if len(run.AgentSteps) != 1 {
+		t.Fatalf("AgentSteps count = %d, want 1", len(run.AgentSteps))
 	}
 }
 

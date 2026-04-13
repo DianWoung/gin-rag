@@ -51,6 +51,7 @@ RAG 系统的质量保障采用三层闭环：
 - `APP_PORT`: HTTP 端口，默认 `8080`
 - `MYSQL_DSN`: MySQL 连接串，必填
 - `ADMIN_API_KEY`: `/api/*` 管理面鉴权 key，必填
+- `CHAT_API_KEY`: `/v1/chat/completions` 鉴权 key，可选（为空则不启用）
 - `QDRANT_HOST`: Qdrant 主机，默认 `127.0.0.1`
 - `QDRANT_GRPC_PORT`: Qdrant gRPC 端口，默认 `6334`
 - `OPENAI_BASE_URL`: 聊天上游的 OpenAI 兼容地址，默认 `https://api.openai.com/v1`
@@ -75,7 +76,8 @@ RAG 系统的质量保障采用三层闭环：
 - 若未设置 `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY`，embedding 侧会继续复用聊天侧的 `OPENAI_BASE_URL` / `OPENAI_API_KEY`
 - 新部署建议直接改用 `EMBEDDING_*` 三个变量，避免 chat 和 embedding 配置继续耦合
 - 即使 embedding 已切到本地服务，`app` 仍然要求 `OPENAI_API_KEY`，因为聊天侧没有改成本地模型
-- `/api/*` 管理接口需要 `Authorization: Bearer <ADMIN_API_KEY>` 或 `X-API-Key: <ADMIN_API_KEY>`；`/v1/chat/completions` 不使用这条管理鉴权
+- `/api/*` 管理接口需要 `Authorization: Bearer <ADMIN_API_KEY>` 或 `X-API-Key: <ADMIN_API_KEY>`
+- `/v1/chat/completions` 在 `CHAT_API_KEY` 非空时需要 `Authorization: Bearer <CHAT_API_KEY>` 或 `X-API-Key: <CHAT_API_KEY>`
 - Phoenix tracing 启用后会自动把 `PHOENIX_PROJECT_NAME` 写入 OpenInference resource attribute，并用 `authorization: Bearer <PHOENIX_API_KEY>` 向 OTLP endpoint 发送 trace
 
 ## Phoenix Trace Export
@@ -145,6 +147,8 @@ go run ./cmd/evalctl score-sample <sample_id>
 - `grounded_answer`
 - `citation_correctness`
 - `abstention_quality`
+- `agent_step_efficiency`（从回答中的 `[agent] step ... retrieved=N` 轨迹估计）
+- `agent_invalid_search_ratio`（轨迹中 `retrieved=0` 的步骤占比）
 
 它适合先打通完整流程和回归验证，不等价于正式的 `EinoExt evaluator` 或 LLM-as-a-judge 评测。后续如果接上更完整的 evaluator，可以继续复用现有 `sample -> replay -> score` 这条链路。
 
@@ -299,6 +303,7 @@ bash ./scripts/eval_harness.sh
 - `manual_grounded_drop`: 人工 `grounded_answer` 相比 baseline 下降超过阈值（默认 `0.03`）。
 - `manual_retrieval_drop`: 人工 `retrieval_relevance` 相比 baseline 下降超过阈值（默认 `0.03`）。
 - `direction_conflict_*`: 自动分上升但人工分下降（方向冲突）。
+- `agent_invalid_search_ratio_rise`: replay 侧 `agent_invalid_search_ratio` 相比 baseline 上升超过阈值（默认 `0.10`）。
 
 5. 常用调参项
 
@@ -306,6 +311,7 @@ bash ./scripts/eval_harness.sh
 - `HARNESS_GROUNDED_MAX_DROP`（默认 `0.03`）
 - `HARNESS_RETRIEVAL_MAX_DROP`（默认 `0.03`）
 - `HARNESS_TABLE_CELL_MAX_DROP`（默认 `0.05`）
+- `HARNESS_AGENT_INVALID_MAX_RISE`（默认 `0.10`）
 - `HARNESS_BASELINE_FILE`（默认 `eval/harness/baseline.json`）
 - `HARNESS_REPORT_DIR`（默认 `eval/reports`）
 
@@ -353,7 +359,7 @@ go run ./cmd/server
 说明：
 
 - `/api/*` 管理接口必须携带 `Authorization: Bearer <ADMIN_API_KEY>`
-- `/v1/chat/completions` 不使用这条管理鉴权
+- `/v1/chat/completions` 仅在设置 `CHAT_API_KEY` 后需要鉴权
 
 ### Docker Compose
 
@@ -434,6 +440,7 @@ go run ./cmd/server
 - 文本/PDF 导入
 - 文档索引
 - 非流式/流式聊天
+- `rag` / `agent_rag` 模式切换（含 `max_steps` 配置）
 - Phoenix 最新 trace 抓取与详情查看
 - 一键生成 `evalctl run-trace` 命令
 
@@ -542,8 +549,12 @@ curl 'http://localhost:8080/api/documents?knowledge_base_id=1' \
 
 - `POST /v1/chat/completions`
 - 支持 `model`、`messages`、`temperature`、`stream`
+- 支持 `mode`：`rag`（默认）或 `agent_rag`（最多 3 步检索决策）
+- 支持 `max_steps`：仅 `agent_rag` 生效，范围 `1~3`，默认 `3`
 - `stream=false` 返回标准 JSON
 - `stream=true` 返回 `text/event-stream`，以 OpenAI chat completions SSE 风格输出 `data: {...}` chunk，最后 `data: [DONE]`
+- `agent_rag` 在非流式响应中会在 `metadata.agent.steps` 返回每步查询轨迹
+- `agent_rag` 在流式响应中会先输出 `[agent] step ...` 的进度文本，再输出最终答案
 - 额外支持 `knowledge_base_id` 或 `knowledge_base_name` 选择检索范围
 - 额外支持 `document_ids` 与 `source_types` 做检索过滤，用于把召回范围收敛到指定文档或文档类型
 

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/dianwang-mac/go-rag/internal/appdto"
 	"github.com/dianwang-mac/go-rag/internal/tracebridge"
 )
 
@@ -33,9 +34,9 @@ type ResultSummary struct {
 }
 
 func ScoreChatSample(stored StoredSample, replay *ReplayRun) []EvaluationResult {
-	results := scoreTarget(stored.SampleID, "", TargetCaptured, stored.Sample.Answer, stored.Sample)
+	results := scoreTarget(stored.SampleID, "", TargetCaptured, stored.Sample.Answer, stored.AgentSteps, stored.Sample)
 	if replay != nil {
-		results = append(results, scoreTarget(stored.SampleID, replay.ReplayRunID, TargetReplay, replay.Answer, stored.Sample)...)
+		results = append(results, scoreTarget(stored.SampleID, replay.ReplayRunID, TargetReplay, replay.Answer, replay.AgentSteps, stored.Sample)...)
 	}
 
 	return results
@@ -85,7 +86,7 @@ func SummarizeResults(results []EvaluationResult) []ResultSummary {
 	return summaries
 }
 
-func scoreTarget(sampleID, replayRunID, target, answer string, sample tracebridge.ChatSample) []EvaluationResult {
+func scoreTarget(sampleID, replayRunID, target, answer string, agentSteps []appdto.AgentStep, sample tracebridge.ChatSample) []EvaluationResult {
 	results := []EvaluationResult{
 		buildRewriteFidelity(sampleID, replayRunID, target, sample),
 		buildRetrievalPrecisionAtK(sampleID, replayRunID, target, sample),
@@ -94,6 +95,8 @@ func scoreTarget(sampleID, replayRunID, target, answer string, sample tracebridg
 		buildGroundedAnswer(sampleID, replayRunID, target, answer, sample),
 		buildCitationCorrectness(sampleID, replayRunID, target, answer, sample),
 		buildAbstentionQuality(sampleID, replayRunID, target, answer, sample),
+		buildAgentStepEfficiency(sampleID, replayRunID, target, answer, agentSteps),
+		buildAgentInvalidSearchRatio(sampleID, replayRunID, target, answer, agentSteps),
 	}
 	return results
 }
@@ -219,6 +222,24 @@ func buildAbstentionQuality(sampleID, replayRunID, target, answer string, sample
 	}
 
 	return newResult(sampleID, replayRunID, target, "abstention_quality", StatusScored, 1.0, "answer does not abstain")
+}
+
+func buildAgentStepEfficiency(sampleID, replayRunID, target, answer string, agentSteps []appdto.AgentStep) EvaluationResult {
+	totalSteps, _ := parseAgentStepStats(answer, agentSteps)
+	if totalSteps == 0 {
+		return newResult(sampleID, replayRunID, target, "agent_step_efficiency", StatusSkipped, 0, "agent step markers not found")
+	}
+	score := 1.0 / float64(totalSteps)
+	return newResult(sampleID, replayRunID, target, "agent_step_efficiency", StatusScored, score, fmt.Sprintf("total agent steps %d", totalSteps))
+}
+
+func buildAgentInvalidSearchRatio(sampleID, replayRunID, target, answer string, agentSteps []appdto.AgentStep) EvaluationResult {
+	totalSteps, invalidSteps := parseAgentStepStats(answer, agentSteps)
+	if totalSteps == 0 {
+		return newResult(sampleID, replayRunID, target, "agent_invalid_search_ratio", StatusSkipped, 0, "agent step markers not found")
+	}
+	score := float64(invalidSteps) / float64(totalSteps)
+	return newResult(sampleID, replayRunID, target, "agent_invalid_search_ratio", StatusScored, score, fmt.Sprintf("%d/%d steps retrieved zero chunks", invalidSteps, totalSteps))
 }
 
 func newResult(sampleID, replayRunID, target, metric, status string, score float64, summary string) EvaluationResult {
@@ -380,4 +401,11 @@ func firstNonEmpty(values ...string) string {
 	}
 
 	return ""
+}
+
+func parseAgentStepStats(answer string, agentSteps []appdto.AgentStep) (totalSteps int, invalidSteps int) {
+	if len(agentSteps) > 0 {
+		return agentStepStats(agentSteps)
+	}
+	return agentStepStats(extractAgentSteps(answer))
 }

@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"testing"
 
 	einoembedding "github.com/cloudwego/eino/components/embedding"
@@ -22,9 +24,94 @@ type fakeChatVectorStore struct {
 	lastCollection string
 	lastLimit      uint64
 	lastFilter     store.SearchFilter
+	calls          int
+}
+
+func TestChatCompletionStreamAgentModeEmitsStepAndFinal(t *testing.T) {
+	db := openChatTestDB(t)
+
+	kb := entity.KnowledgeBase{
+		Name:            "kb",
+		CollectionName:  "kb_agent_stream",
+		EmbeddingModel:  "mini-lm",
+		VectorDimension: 3,
+	}
+	if err := db.Create(&kb).Error; err != nil {
+		t.Fatalf("Create(kb) error = %v", err)
+	}
+	doc := entity.Document{
+		KnowledgeBaseID: kb.ID,
+		Title:           "agent doc",
+		SourceType:      "policy",
+		Status:          "indexed",
+		Content:         "agent policy body",
+	}
+	if err := db.Create(&doc).Error; err != nil {
+		t.Fatalf("Create(doc) error = %v", err)
+	}
+
+	vectors := &fakeChatVectorStore{
+		results: []store.SearchResult{{
+			PointID:    "p1",
+			DocumentID: doc.ID,
+			ChunkIndex: 0,
+			Content:    "agent policy body",
+			Score:      0.9,
+		}},
+	}
+
+	model := &scriptedChatModel{
+		responses: []string{
+			`{"action":"final","final_answer":"agent streamed final [1]"}`,
+		},
+	}
+	service := &ChatService{
+		db:      db,
+		vectors: vectors,
+		provider: fakeChatProvider{
+			model:    model,
+			embedder: fakeChatEmbedder{vectors: [][]float64{{0.1, 0.2, 0.3}}},
+		},
+	}
+
+	stream, err := service.ChatCompletionStream(context.Background(), appdto.ChatRequest{
+		Mode:            "agent_rag",
+		MaxSteps:        3,
+		KnowledgeBaseID: kb.ID,
+		Messages: []appdto.ChatMessage{
+			{Role: "user", Content: "tell me the agent policy"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletionStream() error = %v", err)
+	}
+	defer stream.Close()
+
+	var chunks []appdto.ChatStreamChunk
+	for {
+		chunk, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv error = %v", recvErr)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	if len(chunks) < 2 {
+		t.Fatalf("chunk count = %d, want >= 2", len(chunks))
+	}
+	if chunks[0].Delta == "" {
+		t.Fatal("first chunk delta is empty, want agent step message")
+	}
+	if chunks[1].Delta != "agent streamed final [1]" {
+		t.Fatalf("second chunk = %q, want %q", chunks[1].Delta, "agent streamed final [1]")
+	}
 }
 
 func (f *fakeChatVectorStore) Search(_ context.Context, collectionName string, _ []float64, limit uint64, filter store.SearchFilter) ([]store.SearchResult, error) {
+	f.calls++
 	f.lastCollection = collectionName
 	f.lastLimit = limit
 	f.lastFilter = filter
@@ -49,6 +136,27 @@ func (f fakeChatModel) Stream(_ context.Context, _ []*schema.Message, _ ...einom
 	return schema.StreamReaderFromArray([]*schema.Message{{
 		Role:    schema.Assistant,
 		Content: f.response,
+	}}), nil
+}
+
+type scriptedChatModel struct {
+	responses []string
+	index     int
+}
+
+func (s *scriptedChatModel) Generate(_ context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
+	if s.index >= len(s.responses) {
+		return &schema.Message{Role: schema.Assistant, Content: ""}, nil
+	}
+	resp := s.responses[s.index]
+	s.index++
+	return &schema.Message{Role: schema.Assistant, Content: resp}, nil
+}
+
+func (s *scriptedChatModel) Stream(_ context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	return schema.StreamReaderFromArray([]*schema.Message{{
+		Role:    schema.Assistant,
+		Content: "",
 	}}), nil
 }
 
@@ -173,5 +281,79 @@ func TestSortMatchesForPromptIsDeterministic(t *testing.T) {
 		if got[i].PointID != want {
 			t.Fatalf("PointID at %d = %q, want %q", i, got[i].PointID, want)
 		}
+	}
+}
+
+func TestChatCompletionAgentModeSupportsMultiStepSearch(t *testing.T) {
+	db := openChatTestDB(t)
+
+	kb := entity.KnowledgeBase{
+		Name:            "kb",
+		CollectionName:  "kb_agent",
+		EmbeddingModel:  "mini-lm",
+		VectorDimension: 3,
+	}
+	if err := db.Create(&kb).Error; err != nil {
+		t.Fatalf("Create(kb) error = %v", err)
+	}
+	doc := entity.Document{
+		KnowledgeBaseID: kb.ID,
+		Title:           "agent doc",
+		SourceType:      "policy",
+		Status:          "indexed",
+		Content:         "agent policy body",
+	}
+	if err := db.Create(&doc).Error; err != nil {
+		t.Fatalf("Create(doc) error = %v", err)
+	}
+
+	vectors := &fakeChatVectorStore{
+		results: []store.SearchResult{{
+			PointID:    "p1",
+			DocumentID: doc.ID,
+			ChunkIndex: 0,
+			Content:    "agent policy body",
+			Score:      0.9,
+		}},
+	}
+
+	model := &scriptedChatModel{
+		responses: []string{
+			`{"action":"search","query":"agent refined query"}`,
+			`{"action":"final","final_answer":"agent final answer [1]"}`,
+		},
+	}
+
+	service := &ChatService{
+		db:      db,
+		vectors: vectors,
+		provider: fakeChatProvider{
+			model:    model,
+			embedder: fakeChatEmbedder{vectors: [][]float64{{0.1, 0.2, 0.3}}},
+		},
+	}
+
+	result, err := service.ChatCompletion(context.Background(), appdto.ChatRequest{
+		Mode:            "agent_rag",
+		MaxSteps:        3,
+		KnowledgeBaseID: kb.ID,
+		Messages: []appdto.ChatMessage{
+			{Role: "user", Content: "tell me the agent policy"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion() error = %v", err)
+	}
+	if result.Content != "agent final answer [1]" {
+		t.Fatalf("Content = %q, want %q", result.Content, "agent final answer [1]")
+	}
+	if result.Metadata == nil || result.Metadata.Agent == nil {
+		t.Fatalf("Metadata.Agent = nil, want agent trace")
+	}
+	if len(result.Metadata.Agent.Steps) != 2 {
+		t.Fatalf("agent steps = %d, want 2", len(result.Metadata.Agent.Steps))
+	}
+	if vectors.calls != 2 {
+		t.Fatalf("vector search calls = %d, want 2", vectors.calls)
 	}
 }

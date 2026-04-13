@@ -8,9 +8,18 @@ import (
 )
 
 func AdminAuthMiddleware(expectedKey string) gin.HandlerFunc {
+	return APIKeyAuthMiddleware(expectedKey, "admin authentication failed")
+}
+
+func APIKeyAuthMiddleware(expectedKey, message string) gin.HandlerFunc {
 	expectedKey = strings.TrimSpace(expectedKey)
 
 	return func(c *gin.Context) {
+		if expectedKey == "" {
+			c.Next()
+			return
+		}
+
 		token := strings.TrimSpace(c.GetHeader("X-API-Key"))
 		if token == "" {
 			token = parseBearerToken(c.GetHeader("Authorization"))
@@ -19,7 +28,7 @@ func AdminAuthMiddleware(expectedKey string) gin.HandlerFunc {
 		if token == "" || token != expectedKey {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{
-					"message": "admin authentication failed",
+					"message": message,
 					"type":    "authentication_error",
 				},
 			})

@@ -55,6 +55,7 @@ func ReplayChatSample(ctx context.Context, factory ChatModelFactory, stored Stor
 		Temperature: sample.Temperature,
 		Prompt:      sample.Prompt,
 		Answer:      strings.TrimSpace(resp.Content),
+		AgentSteps:  extractAgentSteps(strings.TrimSpace(resp.Content)),
 		Status:      "completed",
 	}, nil
 }

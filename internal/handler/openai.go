@@ -75,6 +75,7 @@ func (h *OpenAIHandler) ChatCompletions(c *gin.Context) {
 			},
 		},
 		"usage": result.Usage,
+		"metadata": result.Metadata,
 	})
 }
 

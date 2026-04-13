@@ -206,3 +206,18 @@ func TestLoadIncludesAdminAPIKey(t *testing.T) {
 		t.Fatalf("AdminAPIKey = %q, want test-admin-key", cfg.AdminAPIKey)
 	}
 }
+
+func TestLoadIncludesOptionalChatAPIKey(t *testing.T) {
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(localhost:3306)/go_rag?parseTime=true")
+	t.Setenv("ADMIN_API_KEY", "test-admin-key")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("CHAT_API_KEY", "chat-access-key")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ChatAPIKey != "chat-access-key" {
+		t.Fatalf("ChatAPIKey = %q, want chat-access-key", cfg.ChatAPIKey)
+	}
+}

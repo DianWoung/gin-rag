@@ -77,7 +77,7 @@ func main() {
 
 	internalAPI := handler.NewInternalAPIHandler(kbService, documentService)
 	openAI := handler.NewOpenAIHandler(chatService)
-	router := server.NewRouter(cfg.AdminAPIKey, internalAPI, openAI)
+	router := server.NewRouter(cfg.AdminAPIKey, cfg.ChatAPIKey, internalAPI, openAI)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.AppPort,

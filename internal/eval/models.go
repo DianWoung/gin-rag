@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/dianwang-mac/go-rag/internal/appdto"
 	"github.com/dianwang-mac/go-rag/internal/tracebridge"
 )
 
@@ -27,6 +28,7 @@ type SampleRecord struct {
 	CollectionName     string  `gorm:"size:128"`
 	EmbeddingModel     string  `gorm:"size:128"`
 	ChunksJSON         string  `gorm:"type:longtext;not null"`
+	AgentStepsJSON     string  `gorm:"type:longtext"`
 	WarningsJSON       string  `gorm:"type:longtext;not null"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -39,6 +41,7 @@ type ReplayRunRecord struct {
 	Temperature  float32 `gorm:"not null;default:0"`
 	Prompt       string  `gorm:"type:longtext;not null"`
 	Answer       string  `gorm:"type:longtext"`
+	AgentStepsJSON string `gorm:"type:longtext"`
 	Status       string  `gorm:"size:32;not null"`
 	ErrorMessage string  `gorm:"type:text"`
 	CreatedAt    time.Time
@@ -69,10 +72,11 @@ type ManualAnnotationRecord struct {
 }
 
 type StoredSample struct {
-	SampleID  string
-	Sample    tracebridge.ChatSample
-	Warnings  []tracebridge.ExportWarning
-	CreatedAt time.Time
+	SampleID    string
+	Sample      tracebridge.ChatSample
+	AgentSteps  []appdto.AgentStep
+	Warnings    []tracebridge.ExportWarning
+	CreatedAt   time.Time
 }
 
 type ReplayRun struct {
@@ -82,6 +86,7 @@ type ReplayRun struct {
 	Temperature  float32
 	Prompt       string
 	Answer       string
+	AgentSteps   []appdto.AgentStep
 	Status       string
 	ErrorMessage string
 	CreatedAt    time.Time
@@ -124,6 +129,10 @@ func NewSampleRecord(sample tracebridge.ChatSample, warnings []tracebridge.Expor
 	if err != nil {
 		return SampleRecord{}, err
 	}
+	agentStepsJSON, err := json.Marshal(extractAgentSteps(sample.Answer))
+	if err != nil {
+		return SampleRecord{}, err
+	}
 
 	return SampleRecord{
 		SampleID:           uuid.NewString(),
@@ -143,6 +152,7 @@ func NewSampleRecord(sample tracebridge.ChatSample, warnings []tracebridge.Expor
 		CollectionName:     sample.CollectionName,
 		EmbeddingModel:     sample.EmbeddingModel,
 		ChunksJSON:         string(chunksJSON),
+		AgentStepsJSON:     string(agentStepsJSON),
 		WarningsJSON:       string(warningsJSON),
 	}, nil
 }
@@ -174,6 +184,12 @@ func (r SampleRecord) ToStoredSample() (StoredSample, error) {
 			return StoredSample{}, err
 		}
 	}
+	var agentSteps []appdto.AgentStep
+	if r.AgentStepsJSON != "" {
+		if err := json.Unmarshal([]byte(r.AgentStepsJSON), &agentSteps); err != nil {
+			return StoredSample{}, err
+		}
+	}
 
 	var warnings []tracebridge.ExportWarning
 	if r.WarningsJSON != "" {
@@ -183,10 +199,11 @@ func (r SampleRecord) ToStoredSample() (StoredSample, error) {
 	}
 
 	return StoredSample{
-		SampleID:  r.SampleID,
-		Sample:    sample,
-		Warnings:  warnings,
-		CreatedAt: r.CreatedAt,
+		SampleID:   r.SampleID,
+		Sample:     sample,
+		AgentSteps: agentSteps,
+		Warnings:   warnings,
+		CreatedAt:  r.CreatedAt,
 	}, nil
 }
 
@@ -195,6 +212,8 @@ func NewReplayRunRecord(run ReplayRun) ReplayRunRecord {
 		run.ReplayRunID = uuid.NewString()
 	}
 
+	agentStepsJSON, _ := json.Marshal(run.AgentSteps)
+
 	return ReplayRunRecord{
 		ReplayRunID:  run.ReplayRunID,
 		SampleID:     run.SampleID,
@@ -202,12 +221,17 @@ func NewReplayRunRecord(run ReplayRun) ReplayRunRecord {
 		Temperature:  run.Temperature,
 		Prompt:       run.Prompt,
 		Answer:       run.Answer,
+		AgentStepsJSON: string(agentStepsJSON),
 		Status:       run.Status,
 		ErrorMessage: run.ErrorMessage,
 	}
 }
 
 func (r ReplayRunRecord) ToReplayRun() ReplayRun {
+	var agentSteps []appdto.AgentStep
+	if r.AgentStepsJSON != "" {
+		_ = json.Unmarshal([]byte(r.AgentStepsJSON), &agentSteps)
+	}
 	return ReplayRun{
 		ReplayRunID:  r.ReplayRunID,
 		SampleID:     r.SampleID,
@@ -215,6 +239,7 @@ func (r ReplayRunRecord) ToReplayRun() ReplayRun {
 		Temperature:  r.Temperature,
 		Prompt:       r.Prompt,
 		Answer:       r.Answer,
+		AgentSteps:   agentSteps,
 		Status:       r.Status,
 		ErrorMessage: r.ErrorMessage,
 		CreatedAt:    r.CreatedAt,

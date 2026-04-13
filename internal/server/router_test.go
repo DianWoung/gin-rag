@@ -74,7 +74,7 @@ func (routerTestChatService) ChatCompletionStream(context.Context, handler.ChatR
 func TestNewRouterProtectsOnlyAdminRoutes(t *testing.T) {
 	internalAPI := handler.NewInternalAPIHandler(routerTestKnowledgeBaseService{}, routerTestDocumentService{})
 	openAI := handler.NewOpenAIHandler(routerTestChatService{})
-	router := NewRouter("test-admin-key", internalAPI, openAI)
+	router := NewRouter("test-admin-key", "", internalAPI, openAI)
 
 	adminReq := httptest.NewRequest(http.MethodGet, "/api/knowledge-bases", nil)
 	adminResp := httptest.NewRecorder()
@@ -104,7 +104,7 @@ func TestNewRouterProtectsOnlyAdminRoutes(t *testing.T) {
 func TestNewRouterServesWebConsoleWithoutAdminAuth(t *testing.T) {
 	internalAPI := handler.NewInternalAPIHandler(routerTestKnowledgeBaseService{}, routerTestDocumentService{})
 	openAI := handler.NewOpenAIHandler(routerTestChatService{})
-	router := NewRouter("test-admin-key", internalAPI, openAI)
+	router := NewRouter("test-admin-key", "", internalAPI, openAI)
 
 	req := httptest.NewRequest(http.MethodGet, "/web/", nil)
 	resp := httptest.NewRecorder()
@@ -115,5 +115,36 @@ func TestNewRouterServesWebConsoleWithoutAdminAuth(t *testing.T) {
 	}
 	if !bytes.Contains(resp.Body.Bytes(), []byte("RAG Manual Debug Console")) {
 		t.Fatalf("body missing web console marker, got: %s", resp.Body.String())
+	}
+}
+
+func TestNewRouterProtectsChatRouteWhenChatAPIKeyConfigured(t *testing.T) {
+	internalAPI := handler.NewInternalAPIHandler(routerTestKnowledgeBaseService{}, routerTestDocumentService{})
+	openAI := handler.NewOpenAIHandler(routerTestChatService{})
+	router := NewRouter("test-admin-key", "test-chat-key", internalAPI, openAI)
+
+	body := map[string]any{
+		"knowledge_base_id": 1,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hello"},
+		},
+	}
+	raw, _ := json.Marshal(body)
+
+	unauthorizedReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(raw))
+	unauthorizedReq.Header.Set("Content-Type", "application/json")
+	unauthorizedResp := httptest.NewRecorder()
+	router.ServeHTTP(unauthorizedResp, unauthorizedReq)
+	if unauthorizedResp.Code != http.StatusUnauthorized {
+		t.Fatalf("chat status = %d, want %d", unauthorizedResp.Code, http.StatusUnauthorized)
+	}
+
+	authorizedReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(raw))
+	authorizedReq.Header.Set("Content-Type", "application/json")
+	authorizedReq.Header.Set("Authorization", "Bearer test-chat-key")
+	authorizedResp := httptest.NewRecorder()
+	router.ServeHTTP(authorizedResp, authorizedReq)
+	if authorizedResp.Code != http.StatusOK {
+		t.Fatalf("chat status = %d, want %d, body = %s", authorizedResp.Code, http.StatusOK, authorizedResp.Body.String())
 	}
 }

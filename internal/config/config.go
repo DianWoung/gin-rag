@@ -12,6 +12,7 @@ type Config struct {
 	AppPort     string
 	MySQLDSN    string
 	AdminAPIKey string
+	ChatAPIKey  string
 	Qdrant      QdrantConfig
 	Chat        ChatConfig
 	Embedding   EmbeddingConfig
@@ -74,6 +75,7 @@ func Load() (*Config, error) {
 		AppPort:     readString("APP_PORT", "8080"),
 		MySQLDSN:    mysqlDSN,
 		AdminAPIKey: adminAPIKey,
+		ChatAPIKey:  readString("CHAT_API_KEY", ""),
 		Qdrant: QdrantConfig{
 			Host:     readString("QDRANT_HOST", "127.0.0.1"),
 			GRPCPort: readInt("QDRANT_GRPC_PORT", 6334),

@@ -49,6 +49,10 @@
             <input id="chatModel" type="text" value="deepseek-chat" />
           </label>
           <label>
+            Chat API Key (optional)
+            <input id="chatKey" type="password" value="" />
+          </label>
+          <label>
             MYSQL_DSN (for evalctl cmd)
             <input
               id="mysqlDsn"
@@ -114,10 +118,27 @@ Manual debug seed: metadata in MySQL, vectors in Qdrant, admin API is protected 
 ADMIN_API_KEY 是做什么的？元数据和向量分别存在哪里？</textarea
               >
             </label>
+            <div class="row">
+              <label>
+                Chat Mode
+                <select id="chatMode">
+                  <option value="rag">rag</option>
+                  <option value="agent_rag">agent_rag</option>
+                </select>
+              </label>
+              <label>
+                Max Steps (agent_rag)
+                <input id="agentMaxSteps" type="number" min="1" max="3" value="3" />
+              </label>
+            </div>
             <div class="row split">
               <button id="chatBtn" class="btn primary">Chat (Non-Stream)</button>
               <button id="chatStreamBtn" class="btn">Chat (Stream)</button>
             </div>
+            <label>
+              Agent Trace
+              <pre id="agentTraceOutput" class="mini-output">No agent steps yet.</pre>
+            </label>
           </article>
 
           <article class="panel">

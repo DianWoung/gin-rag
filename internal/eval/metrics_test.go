@@ -3,6 +3,7 @@ package eval
 import (
 	"testing"
 
+	"github.com/dianwang-mac/go-rag/internal/appdto"
 	"github.com/dianwang-mac/go-rag/internal/tracebridge"
 )
 
@@ -158,5 +159,73 @@ func TestSummarizeResultsAggregatesByTarget(t *testing.T) {
 	}
 	if summaries[1].Target != TargetReplay || summaries[1].AverageScore != 0.375 {
 		t.Fatalf("replay summary = %+v", summaries[1])
+	}
+}
+
+func TestAgentMetricsScoreFromStepMarkers(t *testing.T) {
+	answer := "[agent] step 1/3 query=\"a\" retrieved=2\n[agent] step 2/3 query=\"b\" retrieved=0\nfinal answer"
+	stored := StoredSample{
+		SampleID: "sample-agent-1",
+		Sample: tracebridge.ChatSample{
+			Answer: answer,
+		},
+	}
+
+	results := ScoreChatSample(stored, nil)
+
+	var efficiency EvaluationResult
+	var invalidRatio EvaluationResult
+	for _, result := range results {
+		if result.Metric == "agent_step_efficiency" {
+			efficiency = result
+		}
+		if result.Metric == "agent_invalid_search_ratio" {
+			invalidRatio = result
+		}
+	}
+
+	if efficiency.Status != StatusScored {
+		t.Fatalf("efficiency status = %q, want scored", efficiency.Status)
+	}
+	if efficiency.Score != 0.5 {
+		t.Fatalf("efficiency score = %.2f, want 0.50", efficiency.Score)
+	}
+	if invalidRatio.Status != StatusScored {
+		t.Fatalf("invalid ratio status = %q, want scored", invalidRatio.Status)
+	}
+	if invalidRatio.Score != 0.5 {
+		t.Fatalf("invalid ratio score = %.2f, want 0.50", invalidRatio.Score)
+	}
+}
+
+func TestAgentMetricsPreferStructuredSteps(t *testing.T) {
+	stored := StoredSample{
+		SampleID: "sample-agent-2",
+		Sample: tracebridge.ChatSample{
+			Answer: "final answer only",
+		},
+		AgentSteps: []appdto.AgentStep{
+			{Step: 1, RetrievedCount: 3},
+			{Step: 2, RetrievedCount: 0},
+			{Step: 3, RetrievedCount: 1},
+		},
+	}
+
+	results := ScoreChatSample(stored, nil)
+	var efficiency EvaluationResult
+	var invalidRatio EvaluationResult
+	for _, result := range results {
+		if result.Metric == "agent_step_efficiency" {
+			efficiency = result
+		}
+		if result.Metric == "agent_invalid_search_ratio" {
+			invalidRatio = result
+		}
+	}
+	if efficiency.Status != StatusScored || efficiency.Score != (1.0/3.0) {
+		t.Fatalf("efficiency = %+v, want scored with 1/3", efficiency)
+	}
+	if invalidRatio.Status != StatusScored || invalidRatio.Score != (1.0/3.0) {
+		t.Fatalf("invalid ratio = %+v, want scored with 1/3", invalidRatio)
 	}
 }
