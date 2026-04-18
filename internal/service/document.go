@@ -34,6 +34,7 @@ type embeddingProvider interface {
 type DocumentService struct {
 	db       *gorm.DB
 	splitter *ingest.Splitter
+	cleaner  *ingest.Cleaner
 	pdf      ingest.PDFTextExtractor
 	vectors  documentVectorStore
 	provider embeddingProvider
@@ -50,6 +51,7 @@ func NewDocumentService(db *gorm.DB, splitter *ingest.Splitter, vectors *store.Q
 	return &DocumentService{
 		db:       db,
 		splitter: splitter,
+		cleaner:  ingest.NewCleaner(),
 		pdf:      ingest.NewPDFExtractor(),
 		vectors:  vectors,
 		provider: provider,
@@ -537,6 +539,12 @@ func estimateTokens(content string) int {
 }
 
 func (s *DocumentService) createDocument(ctx context.Context, knowledgeBaseID uint, title, sourceType, content string) (doc *entity.Document, err error) {
+	cleanedContent := content
+	cleanReport := ingest.CleanReport{}
+	if s.cleaner != nil {
+		cleanedContent, cleanReport = s.cleaner.Clean(content)
+	}
+
 	ctx, span := observability.StartSpan(
 		ctx,
 		observability.SpanDocumentCreate,
@@ -544,7 +552,7 @@ func (s *DocumentService) createDocument(ctx context.Context, knowledgeBaseID ui
 		attribute.Int(observability.AttrKnowledgeBaseID, int(knowledgeBaseID)),
 		observability.TextAttribute(observability.AttrTitle, title),
 		observability.TextAttribute(observability.AttrSourceType, sourceType),
-		observability.TextAttribute(observability.AttrChunkBodies, content),
+		observability.TextAttribute(observability.AttrChunkBodies, cleanedContent),
 	)
 	defer func() {
 		if doc != nil {
@@ -553,13 +561,20 @@ func (s *DocumentService) createDocument(ctx context.Context, knowledgeBaseID ui
 		observability.RecordError(span, err)
 		span.End()
 	}()
+	span.SetAttributes(
+		attribute.Bool("rag.clean.changed", cleanReport.Changed),
+		attribute.Int("rag.clean.removed_blank_lines", cleanReport.RemovedBlankLines),
+		attribute.Int("rag.clean.removed_duplicate_lines", cleanReport.RemovedDuplicateLines),
+		attribute.Int("rag.clean.removed_page_number_lines", cleanReport.RemovedPageNumberLines),
+		attribute.Int("rag.clean.removed_repeated_header_footer_lines", cleanReport.RemovedRepeatedHeaderFooterLines),
+	)
 
 	doc = &entity.Document{
 		KnowledgeBaseID: knowledgeBaseID,
 		Title:           title,
 		SourceType:      sourceType,
 		Status:          "imported",
-		Content:         content,
+		Content:         cleanedContent,
 	}
 	if err = s.db.WithContext(ctx).Create(doc).Error; err != nil {
 		err = fmt.Errorf("create document: %w", err)

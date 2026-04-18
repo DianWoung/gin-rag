@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	einoembedding "github.com/cloudwego/eino/components/embedding"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"github.com/dianwang-mac/go-rag/internal/appdto"
 	"github.com/dianwang-mac/go-rag/internal/entity"
 	"github.com/dianwang-mac/go-rag/internal/ingest"
 	"github.com/dianwang-mac/go-rag/internal/store"
@@ -113,10 +115,26 @@ func seedIndexedDocumentFixture(t *testing.T, db *gorm.DB, status string) (entit
 	return kb, doc
 }
 
+func seedKnowledgeBaseOnly(t *testing.T, db *gorm.DB) entity.KnowledgeBase {
+	t.Helper()
+
+	kb := entity.KnowledgeBase{
+		Name:            "kb",
+		CollectionName:  "kb_1",
+		EmbeddingModel:  "bge-m3",
+		VectorDimension: 2,
+	}
+	if err := db.Create(&kb).Error; err != nil {
+		t.Fatalf("Create(kb) error = %v", err)
+	}
+	return kb
+}
+
 func newDocumentServiceForTest(db *gorm.DB, vectors *fakeVectorStore, provider fakeEmbeddingProvider) *DocumentService {
 	return &DocumentService{
 		db:       db,
 		splitter: ingest.NewSplitter(100, 0),
+		cleaner:  ingest.NewCleaner(),
 		vectors:  vectors,
 		provider: provider,
 	}
@@ -234,5 +252,63 @@ func TestIndexDocumentDeletesQdrantPointsWhenChunkInsertFails(t *testing.T) {
 	}
 	if len(vectors.lastDeletedPoints) == 0 {
 		t.Fatal("lastDeletedPoints = empty, want generated point ids")
+	}
+}
+
+func TestImportTextDocumentCleansContentBeforePersisting(t *testing.T) {
+	db := openDocumentTestDB(t)
+	kb := seedKnowledgeBaseOnly(t, db)
+	service := newDocumentServiceForTest(db, &fakeVectorStore{}, fakeEmbeddingProvider{})
+
+	doc, err := service.ImportTextDocument(context.Background(), appdto.ImportTextDocumentRequest{
+		KnowledgeBaseID: kb.ID,
+		Title:           "cleanme.txt",
+		Content:         "ACME Quarterly Report\n正文 A\n\n1\n\nACME Quarterly Report\n正文 B\n\n2\n\nACME Quarterly Report\n正文 C",
+	})
+	if err != nil {
+		t.Fatalf("ImportTextDocument() error = %v", err)
+	}
+	if strings.Contains(doc.Content, "ACME Quarterly Report") {
+		t.Fatalf("doc.Content still contains header noise: %q", doc.Content)
+	}
+	if strings.Contains(doc.Content, "\n\n1\n\n") || strings.HasSuffix(doc.Content, "\n1") {
+		t.Fatalf("doc.Content still contains page number noise: %q", doc.Content)
+	}
+}
+
+func TestIndexDocumentUsesCleanedContentForChunks(t *testing.T) {
+	db := openDocumentTestDB(t)
+	kb := seedKnowledgeBaseOnly(t, db)
+	vectors := &fakeVectorStore{}
+	service := newDocumentServiceForTest(db, vectors, fakeEmbeddingProvider{
+		embedder: fakeEmbedder{vectors: [][]float64{{1, 2}, {1, 2}}},
+	})
+
+	doc, err := service.ImportTextDocument(context.Background(), appdto.ImportTextDocumentRequest{
+		KnowledgeBaseID: kb.ID,
+		Title:           "cleanme.txt",
+		Content:         "Header\nHeader\nBody line\n\n- 2 -",
+	})
+	if err != nil {
+		t.Fatalf("ImportTextDocument() error = %v", err)
+	}
+
+	got, err := service.IndexDocument(context.Background(), doc.ID)
+	if err != nil {
+		t.Fatalf("IndexDocument() error = %v", err)
+	}
+	if got.Status != "indexed" {
+		t.Fatalf("Status = %q, want indexed", got.Status)
+	}
+	if len(vectors.lastUpsertChunks) == 0 {
+		t.Fatal("lastUpsertChunks = empty")
+	}
+	for _, chunk := range vectors.lastUpsertChunks {
+		if strings.Contains(chunk.Content, "- 2 -") {
+			t.Fatalf("chunk.Content still contains page number noise: %q", chunk.Content)
+		}
+		if strings.Count(chunk.Content, "Header") > 1 {
+			t.Fatalf("chunk.Content still contains consecutive duplicate header noise: %q", chunk.Content)
+		}
 	}
 }
