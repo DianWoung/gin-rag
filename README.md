@@ -11,15 +11,25 @@
 - `internal/service`: 知识库、文档入库、RAG Chat 核心逻辑
 - `internal/handler`: 内部 API 与 OpenAI 兼容接口
 - `internal/llm`: Eino OpenAI ChatModel 与 Embedder 初始化
-- `internal/ingest`: 简单文本切分器
+- `internal/ingest`: PDF 提取、保守文本清洗、结构块构建与切分
 
 RAG 主链路：
 
-1. 文本文档或 PDF 通过内部 API 导入 MySQL。
+1. 文本文档或 PDF 通过内部 API 导入 MySQL；落库前会做一次保守文本清洗。
 2. 触发索引时将文本切分、调用 Eino OpenAI Embedder 生成向量。
 3. 向量写入 Qdrant，元数据写入 `document_chunks`。
 4. 聊天请求进入 `POST /v1/chat/completions`。
 5. 服务按知识库检索 Qdrant 相似 chunk，用 Eino `Chain` 组织检索后的提示构造与生成；`stream=true` 时通过 SSE 按 chunk 向外刷出。
+
+当前清洗策略只处理高置信度噪声，避免误伤正文：
+
+- 去除 BOM、NUL、CRLF 差异和行尾空白
+- 折叠连续空白行
+- 去除独立页码行，例如 `1`、`- 2 -`、`Page 3`
+- 去除连续重复的短行
+- 去除全篇重复出现至少 3 次的短页眉/页脚行
+
+当前不会做段落重排、多栏纠正、OCR 猜测修复或正文改写。
 
 ## 评测与观测
 
